@@ -9,23 +9,48 @@ const { Client, LocalAuth, Poll } = require('whatsapp-web.js');
 
 const TIMEZONE = 'Asia/Jakarta';
 const PREGNANCY_MONTHS_LIMIT = 9;
-const REMINDER_POLL_QUESTION = 'Sudah minum tablet FE hari ini?';
-const REMINDER_POLL_OPTIONS = ['Sudah', 'Belum'];
+const REMINDER_POLL_QUESTION = 'Sudah minum tablet FE hari ini? 💊😊';
+const REMINDER_POLL_OPTIONS = ['Sudah ✅', 'Belum ⏳'];
+const ENFORCE_ALLOWLIST = /^(1|true)$/i.test(process.env.ENFORCE_ALLOWLIST || '');
+const ADMIN_WA_IDS = parseWaIdList(process.env.ADMIN_WA_IDS);
+const ALLOWLIST_WA_IDS = parseWaIdList(process.env.ALLOWLIST_WA_IDS);
+const MAX_MESSAGES_PER_MINUTE = Number(process.env.RATE_LIMIT_MAX_PER_MINUTE || 20);
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60000);
+const RATE_LIMIT_COOLDOWN_MS = Number(process.env.RATE_LIMIT_COOLDOWN_MS || 120000);
+const REMINDER_LOG_RETENTION_DAYS = Number(process.env.REMINDER_LOG_RETENTION_DAYS || 180);
+const DISABLE_SANDBOX = /^(1|true)$/i.test(process.env.PUPPETEER_NO_SANDBOX || '')
+  || /^(1|true)$/i.test(process.env.DISABLE_CHROME_SANDBOX || '');
 
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'remindcare.db');
 let activeClient = null;
+let reminderLoopRunning = false;
+let lastCleanupDate = null;
+const rateLimitState = new Map();
 
 const QUESTIONS = [
-  { field: 'name', text: 'Halo, aku RemindCare. Boleh tau nama ibu?' },
-  { field: 'age', text: 'Usia berapa?' },
-  { field: 'pregnancy_number', text: 'Kehamilan ke berapa?' },
-  { field: 'hpht', text: 'HPHT (Hari Pertama Haid Terakhir) kapan? Contoh: 2024-01-31' },
-  { field: 'routine_meds', text: 'Apakah rutin mengkonsumsi obat? (ya/tidak)', type: 'yesno' },
-  { field: 'tea', text: 'Masih mengkonsumsi teh? (ya/tidak)', type: 'yesno' },
-  { field: 'reminder_person', text: 'Siapa yang biasanya ngingetin buat minum obat?' },
-  { field: 'allow_remindcare', text: 'Mau diingatkan RemindCare untuk minum obat? (ya/tidak)', type: 'yesno' },
-  { field: 'reminder_time', text: 'RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00)', type: 'time' }
+  { field: 'name', text: 'Halo, aku RemindCare. Boleh tau nama ibu? 😊' },
+  { field: 'age', text: 'Usia berapa? 🎂' },
+  { field: 'pregnancy_number', text: 'Kehamilan ke berapa? 🤰' },
+  { field: 'hpht', text: 'HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024 📅' },
+  { field: 'routine_meds', text: 'Apakah rutin mengkonsumsi obat? (ya/tidak) 💊', type: 'yesno' },
+  { field: 'tea', text: 'Masih mengkonsumsi teh? (ya/tidak) 🍵', type: 'yesno' },
+  { field: 'reminder_person', text: 'Siapa yang biasanya ngingetin buat minum obat? 👥' },
+  { field: 'allow_remindcare', text: 'Mau diingatkan RemindCare untuk minum obat? (ya/tidak) 🔔', type: 'yesno' },
+  { field: 'reminder_time', text: 'RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00) ⏰', type: 'time' }
+];
+
+const REMINDER_TEMPLATES = [
+  'Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. 💊💪',
+  'Semangat ya, Bunda. Konsisten minum tablet FE bikin tubuh lebih bertenaga. ✨💊',
+  'Kamu hebat sudah perhatian sama si kecil. Jangan lupa tablet FE ya. 🤰💗',
+  'Sedikit konsisten tiap hari = hasil besar. Tetap minum tablet FE ya. 🌟💊',
+  'Jaga diri dengan baik, ya. Tablet FE bantu penuhi kebutuhan zat besi. 🩺💊',
+  'Semoga harimu lancar. Tablet FE membantu menjaga kesehatan ibu dan bayi. 🌿🤍',
+  'Bunda luar biasa! Tablet FE membantu mencegah anemia. 💖💊',
+  'Satu tablet FE sehari bantu tubuh tetap fit. 😊💊',
+  'Zat besi penting untuk energi harianmu. Jangan lupa tablet FE. 🔋💊',
+  'RemindCare selalu dukung kamu. Tetap semangat hari ini. 🤗💊'
 ];
 
 function findBrowserExecutable() {
@@ -68,10 +93,116 @@ function resolveClient(candidate) {
   return null;
 }
 
-function buildReminderQuestion(user) {
+function normalizeWaIdInput(input) {
+  if (!input) {
+    return null;
+  }
+  const trimmed = String(input).trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.includes('@')) {
+    return trimmed;
+  }
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) {
+    return null;
+  }
+  return `${digits}@c.us`;
+}
+
+function parseWaIdList(raw) {
+  if (!raw) {
+    return new Set();
+  }
+  const items = String(raw)
+    .split(',')
+    .map((item) => normalizeWaIdInput(item))
+    .filter(Boolean);
+  return new Set(items);
+}
+
+function isRateLimitEnabled() {
+  return Number.isFinite(MAX_MESSAGES_PER_MINUTE) && MAX_MESSAGES_PER_MINUTE > 0;
+}
+
+function checkRateLimit(waId) {
+  if (!isRateLimitEnabled()) {
+    return { allowed: true };
+  }
+
+  const nowMs = Date.now();
+  const windowMs = Number.isFinite(RATE_LIMIT_WINDOW_MS) && RATE_LIMIT_WINDOW_MS > 0
+    ? RATE_LIMIT_WINDOW_MS
+    : 60000;
+  const cooldownMs = Number.isFinite(RATE_LIMIT_COOLDOWN_MS) && RATE_LIMIT_COOLDOWN_MS >= 0
+    ? RATE_LIMIT_COOLDOWN_MS
+    : 120000;
+
+  const state = rateLimitState.get(waId) || { timestamps: [], blockedUntil: 0, lastWarnedAt: 0 };
+  if (nowMs < state.blockedUntil) {
+    const shouldWarn = nowMs - state.lastWarnedAt > 10000;
+    if (shouldWarn) {
+      state.lastWarnedAt = nowMs;
+      rateLimitState.set(waId, state);
+    }
+    return { allowed: false, warn: shouldWarn };
+  }
+
+  state.timestamps = state.timestamps.filter((ts) => nowMs - ts < windowMs);
+  state.timestamps.push(nowMs);
+
+  if (state.timestamps.length > MAX_MESSAGES_PER_MINUTE) {
+    state.blockedUntil = nowMs + cooldownMs;
+    state.lastWarnedAt = nowMs;
+    rateLimitState.set(waId, state);
+    return { allowed: false, warn: true };
+  }
+
+  rateLimitState.set(waId, state);
+  return { allowed: true };
+}
+
+function getDisplayName(user) {
   const rawName = user && user.name ? String(user.name).trim() : '';
-  const displayName = rawName ? rawName : 'Bunda';
-  return `Halo ${displayName} 🌼, sudah minum tablet FE hari ini?`;
+  return rawName ? rawName : 'Bunda';
+}
+
+function getTimeGreeting(now) {
+  const hour = now.hour;
+  if (hour >= 4 && hour < 11) {
+    return 'Selamat pagi ???';
+  }
+  if (hour >= 11 && hour < 15) {
+    return 'Selamat siang ??';
+  }
+  if (hour >= 15 && hour < 18) {
+    return 'Selamat sore ??';
+  }
+  return 'Selamat malam ??';
+}
+
+function pickReminderTemplate(user, dateKey) {
+  const key = `${user && user.wa_id ? user.wa_id : ''}-${dateKey}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) % 2147483647;
+  }
+  const index = REMINDER_TEMPLATES.length > 0
+    ? Math.abs(hash) % REMINDER_TEMPLATES.length
+    : 0;
+  return REMINDER_TEMPLATES[index] || '';
+}
+
+function buildReminderMessage(user, now) {
+  const greeting = getTimeGreeting(now);
+  const name = getDisplayName(user);
+  const template = pickReminderTemplate(user, toDateKey(now));
+  return `${greeting}, ${name}!\n${template}\nBaca artikel bermanfaat di remindcares.web.app 📚🌐`;
+}
+
+function buildReminderQuestion() {
+  return REMINDER_POLL_QUESTION;
 }
 
 function sendText(client, chatId, text) {
@@ -152,6 +283,20 @@ function dbAll(db, sql, params = []) {
   });
 }
 
+async function ensureColumn(db, table, column, definition) {
+  const rows = await dbAll(db, `PRAGMA table_info(${table})`);
+  const exists = rows.some((row) => row.name === column);
+  if (!exists) {
+    await dbRun(db, `ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  }
+}
+
+async function ensureUserColumns(db) {
+  await ensureColumn(db, 'users', 'is_admin', 'is_admin INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'users', 'is_allowed', 'is_allowed INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn(db, 'users', 'is_blocked', 'is_blocked INTEGER NOT NULL DEFAULT 0');
+}
+
 async function initDb(db) {
   await dbRun(
     db,
@@ -168,6 +313,9 @@ async function initDb(db) {
       reminder_person TEXT,
       allow_remindcare INTEGER,
       reminder_time TEXT,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      is_allowed INTEGER NOT NULL DEFAULT 0,
+      is_blocked INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'onboarding',
       onboarding_step INTEGER NOT NULL DEFAULT 1,
       last_reminder_date TEXT,
@@ -188,20 +336,64 @@ async function initDb(db) {
       UNIQUE(wa_id, reminder_date)
     )`
   );
+
+  await ensureUserColumns(db);
 }
 
 async function getUser(db, waId) {
   return dbGet(db, 'SELECT * FROM users WHERE wa_id = ?', [waId]);
 }
 
-async function createUser(db, waId) {
+async function createUser(db, waId, options = {}) {
   const nowIso = nowWib().toISO();
+  const isAdmin = options.is_admin ? 1 : 0;
+  const isAllowed = options.is_allowed ? 1 : 0;
+  const isBlocked = options.is_blocked ? 1 : 0;
   await dbRun(
     db,
-    `INSERT INTO users (wa_id, status, onboarding_step, created_at, updated_at)
-     VALUES (?, 'onboarding', 1, ?, ?)`,
-    [waId, nowIso, nowIso]
+    `INSERT INTO users (
+      wa_id,
+      status,
+      onboarding_step,
+      is_admin,
+      is_allowed,
+      is_blocked,
+      created_at,
+      updated_at
+    )
+     VALUES (?, 'onboarding', 1, ?, ?, ?, ?, ?)`,
+    [waId, isAdmin, isAllowed, isBlocked, nowIso, nowIso]
   );
+}
+
+async function ensureUser(db, waId, seed = {}) {
+  let user = await getUser(db, waId);
+  let isNew = false;
+
+  if (!user) {
+    await createUser(db, waId, seed);
+    user = await getUser(db, waId);
+    isNew = true;
+    return { user, isNew };
+  }
+
+  const updates = {};
+  if (seed.is_admin && !user.is_admin) {
+    updates.is_admin = 1;
+  }
+  if (seed.is_allowed && !user.is_allowed) {
+    updates.is_allowed = 1;
+  }
+  if (seed.is_blocked && !user.is_blocked) {
+    updates.is_blocked = 1;
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await updateUser(db, waId, updates);
+    user = { ...user, ...updates };
+  }
+
+  return { user, isNew };
 }
 
 async function updateUser(db, waId, updates) {
@@ -317,13 +509,141 @@ function parsePollAnswer(input) {
     return null;
   }
   const normalized = input.trim().toLowerCase();
-  if (normalized === 'sudah' || normalized === 'udah') {
+  if (normalized.includes('sudah') || normalized.includes('udah')) {
     return 'Sudah';
   }
-  if (normalized === 'belum') {
+  if (normalized.includes('belum')) {
     return 'Belum';
   }
   return null;
+}
+
+function parseAdminCommand(text) {
+  if (!text) {
+    return null;
+  }
+  const match = text.trim().match(/^admin(?:\s+(.*))?$/i);
+  if (!match) {
+    return null;
+  }
+  const rest = (match[1] || '').trim();
+  if (!rest) {
+    return { action: 'help', args: [], rawArgs: '' };
+  }
+  const parts = rest.split(/\s+/);
+  const action = parts[0].toLowerCase();
+  const rawArgs = rest.slice(action.length).trim();
+  return { action, args: parts.slice(1), rawArgs };
+}
+
+async function purgeOldLogs(db, retentionDays, now = nowWib()) {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) {
+    return 0;
+  }
+  const cutoff = now.minus({ days: retentionDays }).toFormat('yyyy-LL-dd');
+  const result = await dbRun(
+    db,
+    'DELETE FROM reminder_logs WHERE reminder_date < ?',
+    [cutoff]
+  );
+  return result && typeof result.changes === 'number' ? result.changes : 0;
+}
+
+async function getUserStats(db) {
+  const total = await dbGet(db, 'SELECT COUNT(*) as count FROM users');
+  const active = await dbGet(db, "SELECT COUNT(*) as count FROM users WHERE status = 'active'");
+  const allowed = await dbGet(db, 'SELECT COUNT(*) as count FROM users WHERE is_allowed = 1');
+  const blocked = await dbGet(db, 'SELECT COUNT(*) as count FROM users WHERE is_blocked = 1');
+  return {
+    total: total ? total.count : 0,
+    active: active ? active.count : 0,
+    allowed: allowed ? allowed.count : 0,
+    blocked: blocked ? blocked.count : 0
+  };
+}
+
+async function handleAdminCommand(db, client, user, text) {
+  const parsed = parseAdminCommand(text);
+  if (!parsed) {
+    return false;
+  }
+
+  if (!user.is_admin) {
+    await sendText(client, user.wa_id, 'Perintah admin hanya untuk admin ya. 🔒');
+    return true;
+  }
+
+  const { action, rawArgs } = parsed;
+  if (action === 'help') {
+    await sendText(
+      client,
+      user.wa_id,
+      'Perintah admin: admin stats, admin allow <wa_id>, admin block <wa_id>, admin unblock <wa_id>, admin purge logs <hari>. 🛠️'
+    );
+    return true;
+  }
+
+  if (action === 'stats') {
+    const stats = await getUserStats(db);
+    await sendText(
+      client,
+      user.wa_id,
+      `Stat user: total ${stats.total}, aktif ${stats.active}, allowed ${stats.allowed}, blocked ${stats.blocked}. 📊`
+    );
+    return true;
+  }
+
+  if (action === 'allow' || action === 'block' || action === 'unblock') {
+    const target = normalizeWaIdInput(rawArgs);
+    if (!target) {
+      await sendText(client, user.wa_id, 'Format: admin allow|block|unblock <wa_id>. ✍️');
+      return true;
+    }
+
+    const { user: targetUser } = await ensureUser(db, target);
+    const updates = {};
+    if (action === 'allow') {
+      updates.is_allowed = 1;
+      updates.is_blocked = 0;
+    } else if (action === 'block') {
+      updates.is_blocked = 1;
+    } else if (action === 'unblock') {
+      updates.is_blocked = 0;
+    }
+
+    await updateUser(db, targetUser.wa_id, updates);
+    await sendText(
+      client,
+      user.wa_id,
+      `OK ${action} ${targetUser.wa_id}. ✅`
+    );
+    return true;
+  }
+
+  if (action === 'purge') {
+    const parts = rawArgs.split(/\s+/).filter(Boolean);
+    let daysInput = null;
+    if (parts.length === 1) {
+      daysInput = parts[0];
+    } else if (parts.length >= 2 && parts[0].toLowerCase() === 'logs') {
+      daysInput = parts[1];
+    }
+    const days = daysInput ? Number(daysInput) : REMINDER_LOG_RETENTION_DAYS;
+    const removed = await purgeOldLogs(db, days);
+    await sendText(
+      client,
+      user.wa_id,
+      `Log dibersihkan: ${removed} baris (retensi ${Number.isFinite(days) ? days : '-'} hari). 🧹`
+    );
+    return true;
+  }
+
+  await sendText(
+    client,
+    user.wa_id,
+    'Perintah admin tidak dikenali. Ketik: admin help. 🤔'
+  );
+  return true;
 }
 
 function isGreeting(input) {
@@ -338,6 +658,12 @@ function shouldSkipToday(reminderTime, now) {
   const [hour, minute] = reminderTime.split(':').map(Number);
   const scheduled = now.set({ hour, minute, second: 0, millisecond: 0 });
   return now > scheduled;
+}
+
+function shouldSendNow(reminderTime, now) {
+  const [hour, minute] = reminderTime.split(':').map(Number);
+  const scheduled = now.set({ hour, minute, second: 0, millisecond: 0 });
+  return now >= scheduled;
 }
 
 function isPregnancyActive(user, now) {
@@ -371,16 +697,23 @@ async function upsertReminderLog(db, waId, dateKey, response) {
 }
 
 async function sendDailyPoll(db, client, user, now) {
-  const poll = new Poll(buildReminderQuestion(user), REMINDER_POLL_OPTIONS, {
+  const reminderText = buildReminderMessage(user, now);
+  await sendText(client, user.wa_id, reminderText);
+
+  const poll = new Poll(buildReminderQuestion(), REMINDER_POLL_OPTIONS, {
     allowMultipleAnswers: false
   });
 
   const message = await sendPoll(client, user.wa_id, poll);
+  if (!message || !message.id || !message.id._serialized) {
+    console.error('Gagal mengirim polling untuk:', user.wa_id);
+    return;
+  }
   const dateKey = toDateKey(now);
 
   await updateUser(db, user.wa_id, {
     last_reminder_date: dateKey,
-    last_poll_message_id: message.id ? message.id._serialized : null
+    last_poll_message_id: message.id._serialized
   });
 
   await upsertReminderLog(db, user.wa_id, dateKey, null);
@@ -396,7 +729,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
   }
 
   if (!text) {
-    await sendText(client, user.wa_id, 'Aku belum menangkap jawabannya. Bisa diulang?');
+    await sendText(client, user.wa_id, 'Aku belum menangkap jawabannya. Bisa diulang? 🙂');
     return;
   }
 
@@ -405,7 +738,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
   if (question.type === 'yesno') {
     const yesNo = parseYesNo(text);
     if (yesNo === null) {
-      await sendText(client, user.wa_id, 'Jawab dengan ya atau tidak, ya.');
+      await sendText(client, user.wa_id, 'Jawab dengan ya atau tidak, ya. 🙏');
       return;
     }
     updates[question.field] = yesNo ? 1 : 0;
@@ -418,20 +751,29 @@ async function handleOnboardingAnswer(db, client, user, text) {
         reminder_time: null
       });
       await sendText(
+        client,
         user.wa_id,
-        'Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start.'
+        'Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start. 👍'
       );
       return;
     }
   } else if (question.type === 'time') {
     const time = normalizeTimeInput(text);
     if (!time) {
-      await sendText(client, user.wa_id, 'Format jam belum sesuai. Contoh: 17:00.');
+      await sendText(client, user.wa_id, 'Format jam belum sesuai. Contoh: 17:00. ⏰');
       return;
     }
     updates[question.field] = time;
   } else if (question.field === 'hpht') {
     const parsed = parseHpht(text);
+    if (!parsed.iso) {
+      await sendText(
+        client,
+        user.wa_id,
+        'Format HPHT belum sesuai. Contoh: 31-01-2024. 📅'
+      );
+      return;
+    }
     updates.hpht = parsed.raw;
     updates.hpht_iso = parsed.iso;
   } else {
@@ -457,7 +799,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap, RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB lewat polling.`
+      `Siap! RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB. ⏰✨`
     );
     return;
   }
@@ -471,20 +813,24 @@ async function handleCommand(db, client, user, text) {
     return false;
   }
 
+  if (await handleAdminCommand(db, client, user, text)) {
+    return true;
+  }
+
   const normalized = text.trim().toLowerCase();
 
   if (/^(help|menu)$/.test(normalized)) {
     await sendText(
       client,
       user.wa_id,
-      'Perintah: start, stop, ubah jam 17:00.'
+      'Perintah: start, stop, ubah jam 17:00. 📋'
     );
     return true;
   }
 
   if (/^(stop|berhenti)$/.test(normalized)) {
     await updateUser(db, user.wa_id, { allow_remindcare: 0, status: 'paused' });
-    await sendText(client, user.wa_id, 'Oke, pengingat dihentikan dulu.');
+    await sendText(client, user.wa_id, 'Oke, pengingat dihentikan dulu. ⏸️');
     return true;
   }
 
@@ -503,7 +849,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB.`
+      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB. ✅⏰`
     );
     return true;
   }
@@ -513,11 +859,11 @@ async function handleCommand(db, client, user, text) {
     const timeInput = match && match[1] ? match[1] : '';
     const time = normalizeTimeInput(timeInput);
     if (!time) {
-      await sendText(client, user.wa_id, 'Format jam belum sesuai. Contoh: ubah jam 17:00.');
+      await sendText(client, user.wa_id, 'Format jam belum sesuai. Contoh: ubah jam 17:00. ⏰');
       return true;
     }
     await updateUser(db, user.wa_id, { reminder_time: time, allow_remindcare: 1, status: 'active' });
-    await sendText(client, user.wa_id, `Jam pengingat diubah ke ${time} WIB.`);
+    await sendText(client, user.wa_id, `Jam pengingat diubah ke ${time} WIB. ✅⏰`);
     return true;
   }
 
@@ -529,9 +875,9 @@ async function handleDailyResponse(db, client, user, response) {
   await upsertReminderLog(db, user.wa_id, dateKey, response);
 
   if (response === 'Sudah') {
-    await sendText(client, user.wa_id, 'Terima kasih. Semoga sehat selalu.');
+    await sendText(client, user.wa_id, 'Terima kasih. Semoga sehat selalu. 🌼');
   } else if (response === 'Belum') {
-    await sendText(client, user.wa_id, 'Baik, jangan lupa diminum ya.');
+    await sendText(client, user.wa_id, 'Baik, jangan lupa diminum ya. 💊🙂');
   }
 }
 
@@ -542,19 +888,44 @@ async function handleMessage(db, client, msg) {
 
   const text = msg.body ? msg.body.trim() : '';
   const waId = msg.from;
-  const user = await getUser(db, waId);
-
-  if (!user) {
-    if (isGreeting(text)) {
-      await sendText(
-        client,
-        waId,
-        'Halo! Untuk mulai, ketik start ya.'
-      );
-      return;
+  const rateCheck = checkRateLimit(waId);
+  if (!rateCheck.allowed) {
+    if (rateCheck.warn) {
+      await sendText(client, waId, 'Terlalu banyak pesan. Coba lagi sebentar. ⏳');
     }
+    return;
+  }
 
-    await createUser(db, waId);
+  const seed = {
+    is_admin: ADMIN_WA_IDS.has(waId),
+    is_allowed: ALLOWLIST_WA_IDS.has(waId)
+  };
+  const existingUser = await getUser(db, waId);
+  if (!existingUser && ENFORCE_ALLOWLIST && !seed.is_allowed && !seed.is_admin) {
+    await sendText(client, waId, 'Nomor ini belum diizinkan. Hubungi admin. 🚫');
+    return;
+  }
+  if (!existingUser && isGreeting(text)) {
+    await sendText(
+      client,
+      waId,
+      'Halo! 👋 Aku RemindCare, bot pengingat tablet FE untuk ibu hamil supaya minum obat tepat waktu. 🤰💊\nUntuk mulai, ketik start ya. ✨\nCara pakai: jawab pertanyaan, pilih jam pengingat, lalu terima reminder harian. ⏰\nBaca artikel seputar kehamilan di remindcares.web.app 📚🌐'
+    );
+    return;
+  }
+
+  const { user, isNew } = await ensureUser(db, waId, seed);
+
+  if (user.is_blocked) {
+    return;
+  }
+
+  if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
+    await sendText(client, waId, 'Nomor ini belum diizinkan. Hubungi admin. 🚫');
+    return;
+  }
+
+  if (isNew) {
     await sendText(client, waId, QUESTIONS[0].text);
     return;
   }
@@ -570,6 +941,11 @@ async function handleMessage(db, client, msg) {
 
   const pollAnswer = parsePollAnswer(text);
   if (pollAnswer) {
+    const today = toDateKey(nowWib());
+    if (user.last_reminder_date !== today) {
+      await sendText(client, waId, 'Belum ada polling hari ini. Tunggu pengingat berikutnya ya. ⏳');
+      return;
+    }
     await handleDailyResponse(db, client, user, pollAnswer);
     return;
   }
@@ -577,7 +953,7 @@ async function handleMessage(db, client, msg) {
   await sendText(
     client,
     waId,
-    'Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah.'
+    'Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah. 💬📋'
   );
 }
 
@@ -585,6 +961,14 @@ async function handleVoteUpdate(db, client, vote) {
   const waId = vote.voter;
   const user = await getUser(db, waId);
   if (!user) {
+    return;
+  }
+
+  if (user.is_blocked) {
+    return;
+  }
+
+  if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
     return;
   }
 
@@ -600,7 +984,7 @@ async function handleVoteUpdate(db, client, vote) {
     return;
   }
 
-  const response = vote.selectedOptions[0].name;
+  const response = parsePollAnswer(vote.selectedOptions[0].name);
   if (!response) {
     return;
   }
@@ -610,21 +994,34 @@ async function handleVoteUpdate(db, client, vote) {
 
 async function startReminderLoop(db, client) {
   setInterval(async () => {
+    if (reminderLoopRunning) {
+      return;
+    }
+    reminderLoopRunning = true;
     try {
       const now = nowWib();
       const today = toDateKey(now);
-      const currentTime = now.toFormat('HH:mm');
+
+      if (lastCleanupDate !== today) {
+        try {
+          await purgeOldLogs(db, REMINDER_LOG_RETENTION_DAYS, now);
+        } catch (err) {
+          console.error('Gagal membersihkan log lama:', err);
+        }
+        lastCleanupDate = today;
+      }
 
       const users = await dbAll(
         db,
         `SELECT * FROM users
          WHERE status = 'active'
          AND allow_remindcare = 1
-         AND reminder_time IS NOT NULL`
+         AND reminder_time IS NOT NULL
+         AND is_blocked = 0`
       );
 
       for (const user of users) {
-        if (user.reminder_time !== currentTime) {
+        if (!shouldSendNow(user.reminder_time, now)) {
           continue;
         }
 
@@ -632,12 +1029,16 @@ async function startReminderLoop(db, client) {
           continue;
         }
 
+        if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
+          continue;
+        }
+
         if (!isPregnancyActive(user, now)) {
-        await updateUser(db, user.wa_id, { status: 'completed', allow_remindcare: 0 });
+          await updateUser(db, user.wa_id, { status: 'completed', allow_remindcare: 0 });
         await sendText(
           client,
           user.wa_id,
-          'Masa pengingat 9 bulan sudah selesai. Jika ingin lanjut, balas start.'
+          'Masa pengingat 9 bulan sudah selesai. Jika ingin lanjut, balas start. 🎉'
         );
           continue;
         }
@@ -646,6 +1047,8 @@ async function startReminderLoop(db, client) {
       }
     } catch (err) {
       console.error('Gagal menjalankan pengingat:', err);
+    } finally {
+      reminderLoopRunning = false;
     }
   }, 30000);
 }
@@ -660,12 +1063,19 @@ async function main() {
     console.log(`Menggunakan browser: ${executablePath}`);
   }
 
+  const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const disableSandbox = DISABLE_SANDBOX || runningAsRoot;
+  if (runningAsRoot && !DISABLE_SANDBOX) {
+    console.warn('Running as root, otomatis menonaktifkan sandbox Chromium.');
+  }
+  const puppeteerArgs = disableSandbox ? ['--no-sandbox', '--disable-setuid-sandbox'] : [];
+
   const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
       headless: true,
       ...(executablePath ? { executablePath } : {}),
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      ...(puppeteerArgs.length ? { args: puppeteerArgs } : {})
     }
   });
   activeClient = client;
@@ -698,6 +1108,18 @@ async function main() {
   startReminderLoop(db, client);
 }
 
-main().catch((err) => {
-  console.error('RemindCare gagal dijalankan:', err);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('RemindCare gagal dijalankan:', err);
+  });
+}
+
+module.exports = {
+  parseYesNo,
+  normalizeTimeInput,
+  parseHpht,
+  shouldSendNow
+};
+
+
+
