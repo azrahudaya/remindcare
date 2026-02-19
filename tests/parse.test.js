@@ -6,7 +6,11 @@ const {
   parseYesNo,
   normalizeTimeInput,
   parseHpht,
-  shouldSendNow
+  shouldSendNow,
+  getHplDate,
+  getDeliveryValidationStageDue,
+  buildLaborPhaseMessage,
+  parseDeliveryValidationAnswer
 } = require('../index');
 
 function test(name, fn) {
@@ -46,4 +50,44 @@ test('shouldSendNow returns true after scheduled time', () => {
   assert.strictEqual(shouldSendNow('10:30', now), false);
   const exact = DateTime.fromISO('2024-01-01T10:00:00', { zone: 'Asia/Jakarta' });
   assert.strictEqual(shouldSendNow('10:00', exact), true);
+});
+
+test('getHplDate calculates 40 weeks from hpht', () => {
+  const hpl = getHplDate({ hpht_iso: '2024-01-01' });
+  assert.ok(hpl);
+  const expected = DateTime.fromISO('2024-01-01', { zone: 'Asia/Jakarta' })
+    .plus({ days: 280 })
+    .toFormat('yyyy-LL-dd');
+  assert.strictEqual(hpl.toFormat('yyyy-LL-dd'), expected);
+});
+
+test('delivery validation stage is hpl and hpl+3', () => {
+  const hplNow = DateTime.fromISO('2024-10-07T09:00:00', { zone: 'Asia/Jakarta' });
+  const hpl3Now = hplNow.plus({ days: 3 });
+  const baseUser = { hpht_iso: '2024-01-01' };
+
+  assert.strictEqual(getDeliveryValidationStageDue(baseUser, hplNow), 'hpl');
+  assert.strictEqual(
+    getDeliveryValidationStageDue(
+      { ...baseUser, delivery_hpl_response: 'Belum' },
+      hpl3Now,
+    ),
+    'hpl3',
+  );
+});
+
+test('buildLaborPhaseMessage stops after hpl is answered', () => {
+  const week37Now = DateTime.fromISO('2024-09-09T08:00:00', { zone: 'Asia/Jakarta' });
+  const user = { hpht_iso: '2024-01-01' };
+  assert.ok(buildLaborPhaseMessage(user, week37Now));
+  assert.strictEqual(
+    buildLaborPhaseMessage({ ...user, delivery_hpl_response: 'Belum' }, week37Now),
+    null,
+  );
+});
+
+test('parseDeliveryValidationAnswer only handles melahirkan intent', () => {
+  assert.strictEqual(parseDeliveryValidationAnswer('Sudah melahirkan'), 'Sudah');
+  assert.strictEqual(parseDeliveryValidationAnswer('Belum melahirkan'), 'Belum');
+  assert.strictEqual(parseDeliveryValidationAnswer('sudah'), null);
 });

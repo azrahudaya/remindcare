@@ -11,7 +11,7 @@ Bot WhatsApp sederhana untuk mengingatkan ibu hamil minum tablet FE setiap hari.
 
 Data tersimpan di `data/remindcare.db` (SQLite).
 
-Durasi pengingat default sampai 9 bulan (bisa diubah di `index.js` pada `PREGNANCY_MONTHS_LIMIT`).
+Durasi pengingat default sampai 42 minggu (bisa diubah lewat env `PREGNANCY_WEEKS_LIMIT`).
 
 ## Perintah cepat
 - start

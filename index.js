@@ -10,9 +10,17 @@ const qrcode = require("qrcode-terminal");
 const { Client, LocalAuth, Poll } = require("whatsapp-web.js");
 
 const TIMEZONE = "Asia/Jakarta";
-const PREGNANCY_MONTHS_LIMIT = 9;
+const PREGNANCY_WEEKS_LIMIT = Number(process.env.PREGNANCY_WEEKS_LIMIT || 42);
+const HPL_DAYS_FROM_HPHT = 280;
+const HPL_FOLLOW_UP_DAYS = 3;
 const REMINDER_POLL_QUESTION = "Sudah minum tablet FE hari ini? 💊😊";
 const REMINDER_POLL_OPTIONS = ["Sudah ✅", "Belum ⏳"];
+const DELIVERY_VALIDATION_POLL_QUESTION = "Apakah Ibu sudah melahirkan?";
+const DELIVERY_VALIDATION_POLL_OPTIONS = [
+  "Sudah melahirkan",
+  "Belum melahirkan",
+];
+const DELIVERY_ARTICLE_URL = "https://remindcares.web.app";
 const ENFORCE_ALLOWLIST = /^(1|true)$/i.test(
   process.env.ENFORCE_ALLOWLIST || "",
 );
@@ -86,6 +94,52 @@ const QUESTIONS = [
     type: "time",
   },
 ];
+
+const DELIVERY_QUESTIONS = [
+  {
+    field: "delivery_date",
+    text: "Terima kasih infonya, Ibu. Tanggal melahirkan kapan? (contoh: 31-01-2026)",
+    type: "date",
+  },
+  {
+    field: "delivery_time",
+    text: "Jam melahirkan pukul berapa? (format 24 jam, contoh: 14:30)",
+    type: "time",
+  },
+  {
+    field: "delivery_place",
+    text: "Tempat melahirkan di mana? (rumah/puskesmas/klinik/rumah sakit)",
+  },
+  {
+    field: "delivery_birth_attendant",
+    text: "Siapa penolong persalinannya? (contoh: bidan/dokter)",
+  },
+  {
+    field: "delivery_with_complication",
+    text: "Apakah persalinan dengan penyulit? (ya/tidak)",
+    type: "yesno",
+  },
+  {
+    field: "baby_gender",
+    text: "Jenis kelamin bayi apa? (laki-laki/perempuan)",
+  },
+  {
+    field: "baby_birth_weight",
+    text: "Berat badan bayi saat lahir berapa? (boleh teks bebas, contoh: 2,9 kg)",
+  },
+  {
+    field: "mother_current_complaint",
+    text: "Apakah ada keluhan Ibu saat ini? (jika tidak ada, tulis: tidak ada)",
+  },
+];
+
+const LABOR_PHASE_MESSAGES = {
+  37: "Minggu ke-37: Ini fase awal aterm. Tetap tenang, istirahat cukup, dan perhatikan kontraksi teratur.",
+  38: "Minggu ke-38: Ini fase persiapan akhir. Pastikan perlengkapan persalinan siap dan pendamping mudah dihubungi.",
+  39: "Minggu ke-39: Ini fase menunggu persalinan aktif. Pantau gerakan janin dan tanda mulas yang makin teratur.",
+  40: "Minggu ke-40: Ini fase HPL. Sebagian ibu melahirkan tepat HPL, sebagian sedikit sebelum/sesudah HPL.",
+  41: "Minggu ke-41: Ini fase pemantauan lanjutan. Tetap kontrol sesuai anjuran tenaga kesehatan dan waspadai tanda bahaya.",
+};
 
 const REMINDER_TEMPLATES = [
   "Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. 💊💪",
@@ -292,6 +346,142 @@ function buildReminderMessage(user, now) {
 
 function buildReminderQuestion() {
   return REMINDER_POLL_QUESTION;
+}
+
+function getHphtDate(user) {
+  if (!user || !user.hpht_iso) {
+    return null;
+  }
+  const parsed = DateTime.fromISO(String(user.hpht_iso), { zone: TIMEZONE });
+  if (!parsed.isValid) {
+    return null;
+  }
+  return parsed.startOf("day");
+}
+
+function getHplDate(user) {
+  const hpht = getHphtDate(user);
+  if (!hpht) {
+    return null;
+  }
+  return hpht.plus({ days: HPL_DAYS_FROM_HPHT }).startOf("day");
+}
+
+function getGestationalWeek(user, now) {
+  const hpht = getHphtDate(user);
+  if (!hpht) {
+    return null;
+  }
+  const diffDays = Math.floor(now.startOf("day").diff(hpht, "days").days);
+  if (!Number.isFinite(diffDays) || diffDays < 0) {
+    return null;
+  }
+  return Math.floor(diffDays / 7) + 1;
+}
+
+function formatDateId(value) {
+  if (!value) {
+    return "-";
+  }
+  const parsed =
+    typeof value === "string"
+      ? DateTime.fromISO(value, { zone: TIMEZONE })
+      : value.setZone(TIMEZONE);
+  if (!parsed || !parsed.isValid) {
+    return String(value);
+  }
+  return parsed.setLocale("id").toFormat("dd LLLL yyyy");
+}
+
+function buildLaborPhaseMessage(user, now) {
+  if (user && user.delivery_hpl_response) {
+    return null;
+  }
+  const week = getGestationalWeek(user, now);
+  if (!week || week < 37 || week > 41) {
+    return null;
+  }
+  const template = LABOR_PHASE_MESSAGES[week];
+  if (!template) {
+    return null;
+  }
+  if (week !== 40) {
+    return template;
+  }
+  const hpl = getHplDate(user);
+  const hplText = hpl ? formatDateId(hpl) : "-";
+  return `${template}\nPerkiraan HPL Ibu: ${hplText}.`;
+}
+
+function getDeliveryValidationStageDue(user, now) {
+  const hpl = getHplDate(user);
+  if (!hpl) {
+    return null;
+  }
+  const today = toDateKey(now.startOf("day"));
+  const hplDate = toDateKey(hpl);
+  const hplPlus3Date = toDateKey(hpl.plus({ days: HPL_FOLLOW_UP_DAYS }));
+
+  if (
+    today === hplDate &&
+    !user.delivery_hpl_response &&
+    user.delivery_hpl_poll_sent_date !== today
+  ) {
+    return "hpl";
+  }
+
+  if (
+    today === hplPlus3Date &&
+    user.delivery_hpl_response === "Belum" &&
+    !user.delivery_hpl3_response &&
+    user.delivery_hpl3_poll_sent_date !== today
+  ) {
+    return "hpl3";
+  }
+
+  return null;
+}
+
+function getPendingDeliveryPollStage(user) {
+  if (!user || !user.delivery_poll_stage) {
+    return null;
+  }
+  if (user.delivery_poll_stage === "hpl" && !user.delivery_hpl_response) {
+    return "hpl";
+  }
+  if (user.delivery_poll_stage === "hpl3" && !user.delivery_hpl3_response) {
+    return "hpl3";
+  }
+  return null;
+}
+
+function buildDeliveryValidationMessage(user, now, stage) {
+  const greeting = getTimeGreeting(now);
+  const name = getDisplayName(user);
+  const hpl = getHplDate(user);
+  const hplText = hpl ? formatDateId(hpl) : "-";
+  if (stage === "hpl3") {
+    return `${greeting}, ${name}.\nHari ini adalah H+3 dari HPL (${hplText}). Kami ingin memastikan kondisi Ibu ya.`;
+  }
+  return `${greeting}, ${name}.\nHari ini adalah HPL (${hplText}). Kami ingin memastikan kondisi Ibu ya.`;
+}
+
+function buildDeliveryValidationQuestion() {
+  return DELIVERY_VALIDATION_POLL_QUESTION;
+}
+
+function parseDeliveryValidationAnswer(input) {
+  if (!input) {
+    return null;
+  }
+  const normalized = input.trim().toLowerCase();
+  if (normalized.includes("sudah melahir") || normalized.includes("udah melahir")) {
+    return "Sudah";
+  }
+  if (normalized.includes("belum melahir")) {
+    return "Belum";
+  }
+  return null;
 }
 
 function sendText(client, chatId, text) {
@@ -863,6 +1053,18 @@ function renderAdminDashboardPage() {
             <div class="card"><div class="label">Total Sudah</div><div class="value" id="detail-total-sudah">-</div></div>
             <div class="card"><div class="label">Total Belum</div><div class="value" id="detail-total-belum">-</div></div>
           </div>
+          <div class="section-title">Data Persalinan</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Nilai</th>
+              </tr>
+            </thead>
+            <tbody id="detail-delivery-body">
+              <tr><td colspan="2" class="muted">Belum ada data persalinan.</td></tr>
+            </tbody>
+          </table>
           <div class="section-title">History Reminder</div>
           <table>
             <thead>
@@ -953,6 +1155,38 @@ function renderAdminDashboardPage() {
           closeUserDetail();
         }
       });
+      function renderDeliveryDetails(user) {
+        const tbody = document.getElementById('detail-delivery-body');
+        const rows = [
+          ['Validasi HPL', user.delivery_hpl_response],
+          ['Validasi HPL +3', user.delivery_hpl3_response],
+          ['Tanggal melahirkan', user.delivery_date_iso || user.delivery_date],
+          ['Jam melahirkan', user.delivery_time],
+          ['Tempat melahirkan', user.delivery_place],
+          ['Penolong persalinan', user.delivery_birth_attendant],
+          ['Penyulit persalinan', user.delivery_with_complication],
+          ['Jenis kelamin bayi', user.baby_gender],
+          ['Berat badan bayi', user.baby_birth_weight],
+          ['Keluhan ibu saat ini', user.mother_current_complaint],
+          ['Data selesai diisi', user.delivery_data_completed_at]
+        ];
+        const hasData = rows.some((row) => row[1] !== null && row[1] !== undefined && row[1] !== '');
+        if (!hasData) {
+          tbody.innerHTML = '<tr><td colspan="2" class="muted">Belum ada data persalinan.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = '';
+        for (const row of rows) {
+          const tr = document.createElement('tr');
+          const tdLabel = document.createElement('td');
+          tdLabel.textContent = row[0];
+          const tdValue = document.createElement('td');
+          tdValue.textContent = fmt(row[1]);
+          tr.appendChild(tdLabel);
+          tr.appendChild(tdValue);
+          tbody.appendChild(tr);
+        }
+      }
       async function openUserDetail(waId) {
         overlay.classList.add('show');
         document.getElementById('detail-name').textContent = 'Detail User';
@@ -965,6 +1199,8 @@ function renderAdminDashboardPage() {
         document.getElementById('detail-time').textContent = '-';
         document.getElementById('detail-total-sudah').textContent = '-';
         document.getElementById('detail-total-belum').textContent = '-';
+        const deliveryBody = document.getElementById('detail-delivery-body');
+        deliveryBody.innerHTML = '<tr><td colspan="2" class="muted">Memuat data...</td></tr>';
         const detailBody = document.getElementById('detail-logs-body');
         detailBody.innerHTML = '<tr><td colspan="5" class="muted">Memuat data...</td></tr>';
         try {
@@ -976,6 +1212,7 @@ function renderAdminDashboardPage() {
           document.getElementById('detail-time').textContent = fmt(user.reminder_time);
           document.getElementById('detail-total-sudah').textContent = fmt(data.totals.total_sudah);
           document.getElementById('detail-total-belum').textContent = fmt(data.totals.total_belum);
+          renderDeliveryDetails(user);
           detailBody.innerHTML = '';
           if (!data.logs.length) {
             detailBody.innerHTML = '<tr><td colspan="5" class="muted">Belum ada history.</td></tr>';
@@ -998,6 +1235,7 @@ function renderAdminDashboardPage() {
             detailBody.appendChild(tr);
           }
         } catch (err) {
+          deliveryBody.innerHTML = '<tr><td colspan="2" class="muted">Gagal memuat data persalinan.</td></tr>';
           detailBody.innerHTML = '<tr><td colspan="5" class="muted">Gagal memuat detail.</td></tr>';
         }
       }
@@ -1109,6 +1347,96 @@ async function ensureUserColumns(db) {
     "is_blocked",
     "is_blocked INTEGER NOT NULL DEFAULT 0",
   );
+  await ensureColumn(
+    db,
+    "users",
+    "last_labor_phase_message_date",
+    "last_labor_phase_message_date TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "last_delivery_poll_message_id",
+    "last_delivery_poll_message_id TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_poll_stage",
+    "delivery_poll_stage TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl_poll_sent_date",
+    "delivery_hpl_poll_sent_date TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl_response",
+    "delivery_hpl_response TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl_response_at",
+    "delivery_hpl_response_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl3_poll_sent_date",
+    "delivery_hpl3_poll_sent_date TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl3_response",
+    "delivery_hpl3_response TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_hpl3_response_at",
+    "delivery_hpl3_response_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_data_step",
+    "delivery_data_step INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(db, "users", "delivery_date", "delivery_date TEXT");
+  await ensureColumn(db, "users", "delivery_date_iso", "delivery_date_iso TEXT");
+  await ensureColumn(db, "users", "delivery_time", "delivery_time TEXT");
+  await ensureColumn(db, "users", "delivery_place", "delivery_place TEXT");
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_birth_attendant",
+    "delivery_birth_attendant TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_with_complication",
+    "delivery_with_complication TEXT",
+  );
+  await ensureColumn(db, "users", "baby_gender", "baby_gender TEXT");
+  await ensureColumn(db, "users", "baby_birth_weight", "baby_birth_weight TEXT");
+  await ensureColumn(
+    db,
+    "users",
+    "mother_current_complaint",
+    "mother_current_complaint TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_data_completed_at",
+    "delivery_data_completed_at TEXT",
+  );
 }
 
 async function ensureReminderLogColumns(db) {
@@ -1155,6 +1483,26 @@ async function initDb(db) {
       onboarding_step INTEGER NOT NULL DEFAULT 1,
       last_reminder_date TEXT,
       last_poll_message_id TEXT,
+      last_labor_phase_message_date TEXT,
+      last_delivery_poll_message_id TEXT,
+      delivery_poll_stage TEXT,
+      delivery_hpl_poll_sent_date TEXT,
+      delivery_hpl_response TEXT,
+      delivery_hpl_response_at TEXT,
+      delivery_hpl3_poll_sent_date TEXT,
+      delivery_hpl3_response TEXT,
+      delivery_hpl3_response_at TEXT,
+      delivery_data_step INTEGER NOT NULL DEFAULT 0,
+      delivery_date TEXT,
+      delivery_date_iso TEXT,
+      delivery_time TEXT,
+      delivery_place TEXT,
+      delivery_birth_attendant TEXT,
+      delivery_with_complication TEXT,
+      baby_gender TEXT,
+      baby_birth_weight TEXT,
+      mother_current_complaint TEXT,
+      delivery_data_completed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
@@ -1493,6 +1841,17 @@ async function getAdminUsers(db) {
       u.name,
       u.status,
       u.reminder_time,
+      u.delivery_hpl_response,
+      u.delivery_hpl3_response,
+      u.delivery_date_iso,
+      u.delivery_time,
+      u.delivery_place,
+      u.delivery_birth_attendant,
+      u.delivery_with_complication,
+      u.baby_gender,
+      u.baby_birth_weight,
+      u.mother_current_complaint,
+      u.delivery_data_completed_at,
       rl_last.reminder_date as last_response_date,
       rl_last.response as last_response,
       COALESCE(agg.total_sudah, 0) as total_sudah,
@@ -1681,14 +2040,15 @@ function shouldSendNow(reminderTime, now) {
 }
 
 function isPregnancyActive(user, now) {
-  if (!user.hpht_iso) {
+  const start = getHphtDate(user);
+  if (!start) {
     return true;
   }
-  const start = DateTime.fromISO(user.hpht_iso, { zone: TIMEZONE });
-  if (!start.isValid) {
-    return true;
-  }
-  const end = start.plus({ months: PREGNANCY_MONTHS_LIMIT }).endOf("day");
+  const weeksLimit =
+    Number.isFinite(PREGNANCY_WEEKS_LIMIT) && PREGNANCY_WEEKS_LIMIT > 0
+      ? PREGNANCY_WEEKS_LIMIT
+      : 42;
+  const end = start.plus({ weeks: weeksLimit }).endOf("day");
   return now <= end;
 }
 
@@ -1764,6 +2124,217 @@ async function sendDailyPoll(db, client, user, now) {
   });
 
   await ensureReminderLog(db, user.wa_id, dateKey);
+}
+
+async function sendLaborPhaseMessage(db, client, user, now) {
+  const today = toDateKey(now);
+  if (user.last_labor_phase_message_date === today) {
+    return false;
+  }
+  const phaseMessage = buildLaborPhaseMessage(user, now);
+  if (!phaseMessage) {
+    return false;
+  }
+  const sent = await sendText(client, user.wa_id, phaseMessage);
+  if (!sent) {
+    return false;
+  }
+  await updateUser(db, user.wa_id, { last_labor_phase_message_date: today });
+  return true;
+}
+
+async function sendDeliveryValidationPoll(db, client, user, now, stage) {
+  const intro = buildDeliveryValidationMessage(user, now, stage);
+  await sendText(client, user.wa_id, intro);
+
+  const poll = new Poll(
+    buildDeliveryValidationQuestion(),
+    DELIVERY_VALIDATION_POLL_OPTIONS,
+    { allowMultipleAnswers: false },
+  );
+  const message = await sendPoll(client, user.wa_id, poll);
+  if (!message || !message.id || !message.id._serialized) {
+    console.error("Gagal mengirim polling validasi lahir untuk:", user.wa_id);
+    return false;
+  }
+
+  const today = toDateKey(now);
+  const updates = {
+    last_delivery_poll_message_id: message.id._serialized,
+    delivery_poll_stage: stage,
+  };
+  if (stage === "hpl") {
+    updates.delivery_hpl_poll_sent_date = today;
+  } else if (stage === "hpl3") {
+    updates.delivery_hpl3_poll_sent_date = today;
+  }
+  await updateUser(db, user.wa_id, updates);
+  return true;
+}
+
+function buildBelumDeliverySupportMessage(stage) {
+  const lines = [
+    "Terima kasih sudah memberi kabar, Ibu. Tetap semangat ya.",
+    "Keterlambatan dari HPL masih bisa normal pada sebagian ibu hamil.",
+    "Tetap tenang dan pantau tanda persalinan seperti kontraksi teratur, keluar lendir bercampur darah, atau ketuban pecah.",
+    "",
+    "Yang sebaiknya dilakukan:",
+    "1. Istirahat cukup dan jaga asupan cairan.",
+    "2. Pantau gerakan janin secara berkala.",
+    "3. Segera ke fasilitas kesehatan bila ada tanda bahaya.",
+    "",
+    `Baca artikel lanjutan di: ${DELIVERY_ARTICLE_URL}`,
+  ];
+  if (stage === "hpl") {
+    lines.push("Kami akan menanyakan lagi pada H+3 dari HPL untuk memastikan kondisi Ibu.");
+  }
+  return lines.join("\n");
+}
+
+async function startDeliveryDataCollection(db, client, user) {
+  await updateUser(db, user.wa_id, {
+    delivery_data_step: 1,
+    delivery_date: null,
+    delivery_date_iso: null,
+    delivery_time: null,
+    delivery_place: null,
+    delivery_birth_attendant: null,
+    delivery_with_complication: null,
+    baby_gender: null,
+    baby_birth_weight: null,
+    mother_current_complaint: null,
+    delivery_data_completed_at: null,
+  });
+  await sendText(client, user.wa_id, DELIVERY_QUESTIONS[0].text);
+}
+
+async function handleDeliveryValidationResponse(
+  db,
+  client,
+  user,
+  response,
+  stageHint = null,
+) {
+  if (response !== "Sudah" && response !== "Belum") {
+    return false;
+  }
+
+  const stage =
+    stageHint ||
+    getPendingDeliveryPollStage(user) ||
+    getDeliveryValidationStageDue(user, nowWib());
+  if (!stage) {
+    return false;
+  }
+  if (stage === "hpl" && user.delivery_hpl_response) {
+    return true;
+  }
+  if (stage === "hpl3" && user.delivery_hpl3_response) {
+    return true;
+  }
+
+  const nowIso = nowWib().toISO();
+  const updates = {
+    delivery_poll_stage: null,
+    last_delivery_poll_message_id: null,
+  };
+  if (stage === "hpl") {
+    updates.delivery_hpl_response = response;
+    updates.delivery_hpl_response_at = nowIso;
+  } else {
+    updates.delivery_hpl3_response = response;
+    updates.delivery_hpl3_response_at = nowIso;
+  }
+  await updateUser(db, user.wa_id, updates);
+
+  if (response === "Belum") {
+    await sendText(client, user.wa_id, buildBelumDeliverySupportMessage(stage));
+    return true;
+  }
+
+  await sendText(
+    client,
+    user.wa_id,
+    "Terima kasih, Ibu. Selamat atas kelahirannya. Kami lanjutkan pendataan persalinan singkat ya.",
+  );
+  await startDeliveryDataCollection(db, client, user);
+  return true;
+}
+
+async function handleDeliveryDataAnswer(db, client, user, text) {
+  const step = Number(user.delivery_data_step || 0);
+  if (!Number.isFinite(step) || step <= 0) {
+    return false;
+  }
+
+  const question = DELIVERY_QUESTIONS[step - 1];
+  if (!question) {
+    await updateUser(db, user.wa_id, { delivery_data_step: 0 });
+    return false;
+  }
+
+  const raw = text ? text.trim() : "";
+  if (!raw) {
+    await sendText(client, user.wa_id, "Jawabannya belum terbaca. Bisa diulang?");
+    return true;
+  }
+
+  const updates = {};
+  if (question.type === "date") {
+    const parsed = parseHpht(raw);
+    if (!parsed.iso) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Format tanggal belum sesuai. Contoh: 31-01-2026.",
+      );
+      return true;
+    }
+    updates.delivery_date = parsed.raw;
+    updates.delivery_date_iso = parsed.iso;
+  } else if (question.type === "time") {
+    const time = normalizeTimeInput(raw);
+    if (!time) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Format jam belum sesuai. Contoh: 14:30.",
+      );
+      return true;
+    }
+    updates.delivery_time = time;
+  } else if (question.type === "yesno") {
+    const yesNo = parseYesNo(raw);
+    if (yesNo === null) {
+      await sendText(client, user.wa_id, "Jawab dengan ya atau tidak ya.");
+      return true;
+    }
+    updates.delivery_with_complication = yesNo
+      ? "Dengan penyulit"
+      : "Tidak dengan penyulit";
+  } else {
+    updates[question.field] = raw;
+  }
+
+  const nextStep = step + 1;
+  if (nextStep > DELIVERY_QUESTIONS.length) {
+    updates.delivery_data_step = 0;
+    updates.delivery_data_completed_at = nowWib().toISO();
+    await updateUser(db, user.wa_id, updates);
+    await sendText(
+      client,
+      user.wa_id,
+      "Terima kasih, data persalinan sudah dicatat. Jika ada perubahan, kabari kami ya.",
+    );
+    return true;
+  }
+
+  await updateUser(db, user.wa_id, {
+    ...updates,
+    delivery_data_step: nextStep,
+  });
+  await sendText(client, user.wa_id, DELIVERY_QUESTIONS[nextStep - 1].text);
+  return true;
 }
 
 async function handleOnboardingAnswer(db, client, user, text) {
@@ -2070,6 +2641,24 @@ async function handleMessage(db, client, msg) {
     return;
   }
 
+  if (Number(user.delivery_data_step || 0) > 0) {
+    await handleDeliveryDataAnswer(db, client, user, text);
+    return;
+  }
+
+  const deliveryValidationAnswer = parseDeliveryValidationAnswer(text);
+  const pendingDeliveryStage = getPendingDeliveryPollStage(user);
+  if (deliveryValidationAnswer && pendingDeliveryStage) {
+    await handleDeliveryValidationResponse(
+      db,
+      client,
+      user,
+      deliveryValidationAnswer,
+      pendingDeliveryStage,
+    );
+    return;
+  }
+
   const pollAnswer = parsePollAnswer(text);
   if (pollAnswer) {
     const today = toDateKey(nowWib());
@@ -2124,20 +2713,35 @@ async function handleVoteUpdate(db, client, vote) {
       ? vote.parentMessage.id._serialized
       : null;
 
-  if (
-    user.last_poll_message_id &&
-    pollMessageId &&
-    user.last_poll_message_id !== pollMessageId
-  ) {
-    return;
-  }
-
   if (!vote.selectedOptions || vote.selectedOptions.length === 0) {
     return;
   }
 
   const response = parsePollAnswer(vote.selectedOptions[0].name);
   if (!response) {
+    return;
+  }
+
+  if (
+    user.last_delivery_poll_message_id &&
+    pollMessageId &&
+    user.last_delivery_poll_message_id === pollMessageId
+  ) {
+    await handleDeliveryValidationResponse(
+      db,
+      client,
+      user,
+      response,
+      getPendingDeliveryPollStage(user),
+    );
+    return;
+  }
+
+  const isFePoll =
+    user.last_poll_message_id &&
+    pollMessageId &&
+    user.last_poll_message_id === pollMessageId;
+  if (!isFePoll) {
     return;
   }
 
@@ -2177,10 +2781,6 @@ async function startReminderLoop(db, client) {
           continue;
         }
 
-        if (user.last_reminder_date === today) {
-          continue;
-        }
-
         if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
           continue;
         }
@@ -2193,8 +2793,19 @@ async function startReminderLoop(db, client) {
           await sendText(
             client,
             user.wa_id,
-            "Masa pengingat 9 bulan sudah selesai. Jika ingin lanjut, balas start. 🎉",
+            "Masa pengingat kehamilan sudah selesai. Jika ingin lanjut, balas start.",
           );
+          continue;
+        }
+
+        await sendLaborPhaseMessage(db, client, user, now);
+
+        const deliveryStage = getDeliveryValidationStageDue(user, now);
+        if (deliveryStage) {
+          await sendDeliveryValidationPoll(db, client, user, now, deliveryStage);
+        }
+
+        if (user.last_reminder_date === today) {
           continue;
         }
 
@@ -2331,12 +2942,61 @@ function startAdminServer(db) {
           res.status(404).json({ error: "not_found" });
           return;
         }
-        const csv = buildCsv(detail.logs, [
+        const deliverySnapshot = {
+          delivery_hpl_response: detail.user.delivery_hpl_response,
+          delivery_hpl3_response: detail.user.delivery_hpl3_response,
+          delivery_date: detail.user.delivery_date_iso || detail.user.delivery_date,
+          delivery_time: detail.user.delivery_time,
+          delivery_place: detail.user.delivery_place,
+          delivery_birth_attendant: detail.user.delivery_birth_attendant,
+          delivery_with_complication: detail.user.delivery_with_complication,
+          baby_gender: detail.user.baby_gender,
+          baby_birth_weight: detail.user.baby_birth_weight,
+          mother_current_complaint: detail.user.mother_current_complaint,
+          delivery_data_completed_at: detail.user.delivery_data_completed_at,
+        };
+        const logs =
+          detail.logs && detail.logs.length > 0
+            ? detail.logs
+            : [
+                {
+                  reminder_date: null,
+                  response: null,
+                  response_sudah_count: null,
+                  response_belum_count: null,
+                  created_at: null,
+                },
+              ];
+        const rows = logs.map((log) => ({ ...log, ...deliverySnapshot }));
+        const csv = buildCsv(rows, [
           { key: "reminder_date", label: "reminder_date" },
           { key: "response", label: "response" },
           { key: "response_sudah_count", label: "response_sudah_count" },
           { key: "response_belum_count", label: "response_belum_count" },
           { key: "created_at", label: "created_at" },
+          { key: "delivery_hpl_response", label: "delivery_hpl_response" },
+          { key: "delivery_hpl3_response", label: "delivery_hpl3_response" },
+          { key: "delivery_date", label: "delivery_date" },
+          { key: "delivery_time", label: "delivery_time" },
+          { key: "delivery_place", label: "delivery_place" },
+          {
+            key: "delivery_birth_attendant",
+            label: "delivery_birth_attendant",
+          },
+          {
+            key: "delivery_with_complication",
+            label: "delivery_with_complication",
+          },
+          { key: "baby_gender", label: "baby_gender" },
+          { key: "baby_birth_weight", label: "baby_birth_weight" },
+          {
+            key: "mother_current_complaint",
+            label: "mother_current_complaint",
+          },
+          {
+            key: "delivery_data_completed_at",
+            label: "delivery_data_completed_at",
+          },
         ]);
         res.setHeader("Content-Type", "text/csv; charset=utf-8");
         res.setHeader(
@@ -2373,6 +3033,20 @@ function startAdminServer(db) {
         { key: "last_response", label: "last_response" },
         { key: "total_sudah", label: "total_sudah" },
         { key: "total_belum", label: "total_belum" },
+        { key: "delivery_hpl_response", label: "delivery_hpl_response" },
+        { key: "delivery_hpl3_response", label: "delivery_hpl3_response" },
+        { key: "delivery_date_iso", label: "delivery_date_iso" },
+        { key: "delivery_time", label: "delivery_time" },
+        { key: "delivery_place", label: "delivery_place" },
+        { key: "delivery_birth_attendant", label: "delivery_birth_attendant" },
+        {
+          key: "delivery_with_complication",
+          label: "delivery_with_complication",
+        },
+        { key: "baby_gender", label: "baby_gender" },
+        { key: "baby_birth_weight", label: "baby_birth_weight" },
+        { key: "mother_current_complaint", label: "mother_current_complaint" },
+        { key: "delivery_data_completed_at", label: "delivery_data_completed_at" },
       ]);
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
@@ -2504,4 +3178,8 @@ module.exports = {
   normalizeTimeInput,
   parseHpht,
   shouldSendNow,
+  getHplDate,
+  getDeliveryValidationStageDue,
+  buildLaborPhaseMessage,
+  parseDeliveryValidationAnswer,
 };
