@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("fs");
 const path = require("path");
@@ -13,14 +13,15 @@ const TIMEZONE = "Asia/Jakarta";
 const PREGNANCY_WEEKS_LIMIT = Number(process.env.PREGNANCY_WEEKS_LIMIT || 42);
 const HPL_DAYS_FROM_HPHT = 280;
 const HPL_FOLLOW_UP_DAYS = 3;
-const REMINDER_POLL_QUESTION = "Sudah minum tablet FE hari ini? 💊😊";
-const REMINDER_POLL_OPTIONS = ["Sudah ✅", "Belum ⏳"];
+const REMINDER_POLL_QUESTION = "Sudah minum tablet FE hari ini? ðŸ’ŠðŸ˜Š";
+const REMINDER_POLL_OPTIONS = ["Sudah âœ…", "Belum â³"];
 const DELIVERY_VALIDATION_POLL_QUESTION = "Apakah Ibu sudah melahirkan?";
 const DELIVERY_VALIDATION_POLL_OPTIONS = [
   "Sudah melahirkan",
   "Belum melahirkan",
 ];
 const DELIVERY_ARTICLE_URL = "https://remindcares.web.app";
+const POSTPARTUM_POLL_OPTIONS = ["Sudah âœ…", "Belum â³"];
 const ENFORCE_ALLOWLIST = /^(1|true)$/i.test(
   process.env.ENFORCE_ALLOWLIST || "",
 );
@@ -48,6 +49,18 @@ const ADMIN_WEB_SESSION_TTL_MS = Number(
 const REMINDER_LOG_RETENTION_DAYS = Number(
   process.env.REMINDER_LOG_RETENTION_DAYS || 180,
 );
+const POLL_RETRY_BASE_DELAY_MS = Number(
+  process.env.POLL_RETRY_BASE_DELAY_MS || 5 * 60 * 1000,
+);
+const POLL_RETRY_MAX_DELAY_MS = Number(
+  process.env.POLL_RETRY_MAX_DELAY_MS || 30 * 60 * 1000,
+);
+const REMINDER_LOOP_CONCURRENCY = Number(
+  process.env.REMINDER_LOOP_CONCURRENCY || 10,
+);
+const ADMIN_WEB_COOKIE_SECURE =
+  /^(1|true)$/i.test(process.env.ADMIN_WEB_COOKIE_SECURE || "") ||
+  String(process.env.NODE_ENV || "").toLowerCase() === "production";
 const DISABLE_SANDBOX =
   /^(1|true)$/i.test(process.env.PUPPETEER_NO_SANDBOX || "") ||
   /^(1|true)$/i.test(process.env.DISABLE_CHROME_SANDBOX || "");
@@ -62,35 +75,35 @@ const adminSessions = new Map();
 const deleteConfirmState = new Map();
 
 const QUESTIONS = [
-  { field: "name", text: "Halo, aku RemindCare. Boleh tau nama ibu? 😊" },
-  { field: "age", text: "Usia berapa? 🎂" },
-  { field: "pregnancy_number", text: "Kehamilan ke berapa? 🤰" },
+  { field: "name", text: "Halo, aku RemindCare. Boleh tau nama ibu? ðŸ˜Š" },
+  { field: "age", text: "Usia berapa? ðŸŽ‚" },
+  { field: "pregnancy_number", text: "Kehamilan ke berapa? ðŸ¤°" },
   {
     field: "hpht",
-    text: "HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024 📅",
+    text: "HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024 ðŸ“…",
   },
   {
     field: "routine_meds",
-    text: "Apakah rutin mengkonsumsi obat? (ya/tidak) 💊",
+    text: "Apakah rutin mengkonsumsi obat? (ya/tidak) ðŸ’Š",
     type: "yesno",
   },
   {
     field: "tea",
-    text: "Masih mengkonsumsi teh? (ya/tidak) 🍵",
+    text: "Masih mengkonsumsi teh? (ya/tidak) ðŸµ",
     type: "yesno",
   },
   {
     field: "reminder_person",
-    text: "Siapa yang biasanya ngingetin buat minum obat? 👥",
+    text: "Siapa yang biasanya ngingetin buat minum obat? ðŸ‘¥",
   },
   {
     field: "allow_remindcare",
-    text: "Mau diingatkan RemindCare untuk minum obat? (ya/tidak) 🔔",
+    text: "Mau diingatkan RemindCare untuk minum obat? (ya/tidak) ðŸ””",
     type: "yesno",
   },
   {
     field: "reminder_time",
-    text: "RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00) ⏰",
+    text: "RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00) â°",
     type: "time",
   },
 ];
@@ -141,17 +154,87 @@ const LABOR_PHASE_MESSAGES = {
   41: "Minggu ke-41: Ini fase pemantauan lanjutan. Tetap kontrol sesuai anjuran tenaga kesehatan dan waspadai tanda bahaya.",
 };
 
+const POSTPARTUM_VISIT_SCHEDULES = [
+  {
+    code: "KF1",
+    kind: "KF",
+    label: "KF 1",
+    startHours: 6,
+    endHours: 48,
+    windowText: "6 jam - 2 hari (48 jam) pasca persalinan",
+    benefitText: "Pemantauan kondisi awal ibu setelah melahirkan.",
+  },
+  {
+    code: "KN1",
+    kind: "KN",
+    label: "KN 1",
+    startHours: 6,
+    endHours: 48,
+    windowText: "6 - 48 jam setelah lahir",
+    benefitText: "Pemantauan kondisi awal bayi baru lahir.",
+  },
+  {
+    code: "KF2",
+    kind: "KF",
+    label: "KF 2",
+    startHours: 72,
+    endHours: 168,
+    windowText: "3 - 7 hari pasca persalinan",
+    benefitText: "Pemantauan pemulihan ibu dan produksi ASI.",
+  },
+  {
+    code: "KN2",
+    kind: "KN",
+    label: "KN 2",
+    startHours: 72,
+    endHours: 168,
+    windowText: "3 - 7 hari setelah lahir",
+    benefitText: "Pemantauan adaptasi bayi dan deteksi dini masalah kesehatan.",
+  },
+  {
+    code: "KF3",
+    kind: "KF",
+    label: "KF 3",
+    startHours: 192,
+    endHours: 672,
+    windowText: "8 - 28 hari pasca persalinan",
+    benefitText: "Pemantauan lanjutan masa nifas.",
+  },
+  {
+    code: "KN3",
+    kind: "KN",
+    label: "KN 3",
+    startHours: 192,
+    endHours: 672,
+    windowText: "8 - 28 hari setelah lahir",
+    benefitText: "Pemantauan pertumbuhan dan kondisi kesehatan bayi.",
+  },
+  {
+    code: "KF4",
+    kind: "KF",
+    label: "KF 4",
+    startHours: 696,
+    endHours: 1008,
+    windowText: "29 - 42 hari pasca persalinan",
+    benefitText: "Evaluasi akhir masa nifas dan kesiapan ibu.",
+  },
+];
+
+const POSTPARTUM_VISIT_BY_CODE = new Map(
+  POSTPARTUM_VISIT_SCHEDULES.map((item) => [item.code, item]),
+);
+
 const REMINDER_TEMPLATES = [
-  "Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. 💊💪",
-  "Semangat ya, Bunda. Konsisten minum tablet FE bikin tubuh lebih bertenaga. ✨💊",
-  "Kamu hebat sudah perhatian sama si kecil. Jangan lupa tablet FE ya. 🤰💗",
-  "Sedikit konsisten tiap hari = hasil besar. Tetap minum tablet FE ya. 🌟💊",
-  "Jaga diri dengan baik, ya. Tablet FE bantu penuhi kebutuhan zat besi. 🩺💊",
-  "Semoga harimu lancar. Tablet FE membantu menjaga kesehatan ibu dan bayi. 🌿🤍",
-  "Bunda luar biasa! Tablet FE membantu mencegah anemia. 💖💊",
-  "Satu tablet FE sehari bantu tubuh tetap fit. 😊💊",
-  "Zat besi penting untuk energi harianmu. Jangan lupa tablet FE. 🔋💊",
-  "RemindCare selalu dukung kamu. Tetap semangat hari ini. 🤗💊",
+  "Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. ðŸ’ŠðŸ’ª",
+  "Semangat ya, Bunda. Konsisten minum tablet FE bikin tubuh lebih bertenaga. âœ¨ðŸ’Š",
+  "Kamu hebat sudah perhatian sama si kecil. Jangan lupa tablet FE ya. ðŸ¤°ðŸ’—",
+  "Sedikit konsisten tiap hari = hasil besar. Tetap minum tablet FE ya. ðŸŒŸðŸ’Š",
+  "Jaga diri dengan baik, ya. Tablet FE bantu penuhi kebutuhan zat besi. ðŸ©ºðŸ’Š",
+  "Semoga harimu lancar. Tablet FE membantu menjaga kesehatan ibu dan bayi. ðŸŒ¿ðŸ¤",
+  "Bunda luar biasa! Tablet FE membantu mencegah anemia. ðŸ’–ðŸ’Š",
+  "Satu tablet FE sehari bantu tubuh tetap fit. ðŸ˜ŠðŸ’Š",
+  "Zat besi penting untuk energi harianmu. Jangan lupa tablet FE. ðŸ”‹ðŸ’Š",
+  "RemindCare selalu dukung kamu. Tetap semangat hari ini. ðŸ¤—ðŸ’Š",
 ];
 
 function findBrowserExecutable() {
@@ -341,7 +424,7 @@ function buildReminderMessage(user, now) {
   const greeting = getTimeGreeting(now);
   const name = getDisplayName(user);
   const template = pickReminderTemplate(user, toDateKey(now));
-  return `${greeting}, ${name}!\n${template}\nBaca artikel bermanfaat di remindcares.web.app 📚🌐`;
+  return `${greeting}, ${name}!\n${template}\nBaca artikel bermanfaat di remindcares.web.app ðŸ“šðŸŒ`;
 }
 
 function buildReminderQuestion() {
@@ -475,13 +558,127 @@ function parseDeliveryValidationAnswer(input) {
     return null;
   }
   const normalized = input.trim().toLowerCase();
-  if (normalized.includes("sudah melahir") || normalized.includes("udah melahir")) {
+  if (
+    normalized.includes("sudah melahir") ||
+    normalized.includes("udah melahir")
+  ) {
     return "Sudah";
   }
   if (normalized.includes("belum melahir")) {
     return "Belum";
   }
   return null;
+}
+
+function getDeliveryDateTime(user) {
+  if (!user || !user.delivery_date_iso || !user.delivery_time) {
+    return null;
+  }
+  const parsed = DateTime.fromISO(
+    `${String(user.delivery_date_iso).trim()}T${String(user.delivery_time).trim()}`,
+    { zone: TIMEZONE },
+  );
+  if (!parsed.isValid) {
+    return null;
+  }
+  return parsed;
+}
+
+function validateDeliveryDateIso(deliveryDateIso, user, now = nowWib()) {
+  if (!deliveryDateIso) {
+    return { valid: false, message: "Tanggal melahirkan belum valid." };
+  }
+  const deliveryDate = DateTime.fromISO(String(deliveryDateIso), {
+    zone: TIMEZONE,
+  }).startOf("day");
+  if (!deliveryDate.isValid) {
+    return { valid: false, message: "Tanggal melahirkan belum valid." };
+  }
+  if (deliveryDate > now.startOf("day")) {
+    return {
+      valid: false,
+      message: "Tanggal melahirkan tidak boleh lebih dari hari ini.",
+    };
+  }
+  const hpht = getHphtDate(user);
+  if (hpht && deliveryDate < hpht.startOf("day")) {
+    return {
+      valid: false,
+      message: "Tanggal melahirkan tidak boleh sebelum tanggal HPHT.",
+    };
+  }
+  return { valid: true, message: "" };
+}
+
+function validateDeliveryDateTime(
+  user,
+  deliveryDateIso,
+  deliveryTime,
+  now = nowWib(),
+) {
+  if (!deliveryDateIso || !deliveryTime) {
+    return { valid: false, message: "Tanggal/jam melahirkan belum lengkap." };
+  }
+  const deliveryAt = getDeliveryDateTime({
+    delivery_date_iso: deliveryDateIso,
+    delivery_time: deliveryTime,
+  });
+  if (!deliveryAt) {
+    return {
+      valid: false,
+      message: "Tanggal atau jam melahirkan belum valid.",
+    };
+  }
+  const baseDateCheck = validateDeliveryDateIso(deliveryDateIso, user, now);
+  if (!baseDateCheck.valid) {
+    return baseDateCheck;
+  }
+  if (deliveryAt > now.plus({ minutes: 10 })) {
+    return {
+      valid: false,
+      message: "Jam melahirkan tidak boleh di masa depan.",
+    };
+  }
+  const hpht = getHphtDate(user);
+  if (hpht && deliveryAt < hpht.startOf("day")) {
+    return {
+      valid: false,
+      message: "Tanggal/jam melahirkan tidak boleh sebelum HPHT.",
+    };
+  }
+  return { valid: true, message: "" };
+}
+
+function isPostpartumMonitoringActive(user) {
+  return Boolean(
+    user &&
+    user.delivery_data_completed_at &&
+    user.delivery_date_iso &&
+    user.delivery_time,
+  );
+}
+
+function getPostpartumDueAt(deliveryAt, visit) {
+  if (!deliveryAt || !deliveryAt.isValid || !visit) {
+    return null;
+  }
+  return deliveryAt.plus({ hours: visit.startHours });
+}
+
+function buildPostpartumEducationMessage(user, now) {
+  const greeting = getTimeGreeting(now);
+  const name = getDisplayName(user);
+  return `${greeting}, ${name}.\nMasa nifas dan masa neonatal adalah masa yang sangat penting bagi ibu dan bayi. Pada periode ini, risiko gangguan kesehatan masih tinggi sehingga pemantauan rutin sangat diperlukan untuk memastikan ibu dan bayi dalam kondisi sehat.\nRemindCare akan mengingatkan jadwal kunjungan KF dan KN sesuai waktu yang dianjurkan.\nBaca artikel lanjutan di: ${DELIVERY_ARTICLE_URL}`;
+}
+
+function buildPostpartumVisitMessage(user, visit) {
+  const greeting = getTimeGreeting(nowWib());
+  const name = getDisplayName(user);
+  return `${greeting}, ${name}.\nReminder kunjungan ${visit.label} (${visit.kind}).\nRentang waktu: ${visit.windowText}.\nManfaat: ${visit.benefitText}\nYuk segera lakukan pemeriksaan ke tenaga kesehatan/fasilitas kesehatan.\nBaca artikel lanjutan di: ${DELIVERY_ARTICLE_URL}`;
+}
+
+function buildPostpartumVisitQuestion(visit) {
+  return `Apakah Ibu sudah melakukan kunjungan ${visit.label}?`;
 }
 
 function sendText(client, chatId, text) {
@@ -518,6 +715,47 @@ function nowWib() {
 
 function toDateKey(dt) {
   return dt.toFormat("yyyy-LL-dd");
+}
+
+function getRetryDelayMs(failCount) {
+  const base =
+    Number.isFinite(POLL_RETRY_BASE_DELAY_MS) && POLL_RETRY_BASE_DELAY_MS > 0
+      ? POLL_RETRY_BASE_DELAY_MS
+      : 5 * 60 * 1000;
+  const capped =
+    Number.isFinite(POLL_RETRY_MAX_DELAY_MS) && POLL_RETRY_MAX_DELAY_MS > 0
+      ? POLL_RETRY_MAX_DELAY_MS
+      : 30 * 60 * 1000;
+  const safeFailCount =
+    Number.isFinite(Number(failCount)) && Number(failCount) > 0
+      ? Number(failCount)
+      : 0;
+  if (safeFailCount <= 0) {
+    return 0;
+  }
+  const delay = base * 2 ** (safeFailCount - 1);
+  return delay > capped ? capped : delay;
+}
+
+function canAttemptByBackoff(lastAttemptAt, failCount, now = nowWib()) {
+  const safeFailCount =
+    Number.isFinite(Number(failCount)) && Number(failCount) > 0
+      ? Number(failCount)
+      : 0;
+  if (safeFailCount <= 0) {
+    return true;
+  }
+  if (!lastAttemptAt) {
+    return true;
+  }
+  const attemptedAt = DateTime.fromISO(String(lastAttemptAt), {
+    zone: TIMEZONE,
+  });
+  if (!attemptedAt.isValid) {
+    return true;
+  }
+  const delayMs = getRetryDelayMs(safeFailCount);
+  return now.toMillis() - attemptedAt.toMillis() >= delayMs;
 }
 
 function ensureDataDir() {
@@ -608,20 +846,39 @@ function getAdminSession(req) {
 }
 
 function setAdminCookie(res, token) {
+  const ttlMs =
+    Number.isFinite(ADMIN_WEB_SESSION_TTL_MS) && ADMIN_WEB_SESSION_TTL_MS > 0
+      ? ADMIN_WEB_SESSION_TTL_MS
+      : 8 * 60 * 60 * 1000;
+  const maxAgeSeconds = Math.floor(ttlMs / 1000);
+  const expires = new Date(Date.now() + ttlMs).toUTCString();
   const parts = [
     `rc_admin=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
+    `Max-Age=${maxAgeSeconds}`,
+    `Expires=${expires}`,
   ];
+  if (ADMIN_WEB_COOKIE_SECURE) {
+    parts.push("Secure");
+  }
   res.setHeader("Set-Cookie", parts.join("; "));
 }
 
 function clearAdminCookie(res) {
-  res.setHeader(
-    "Set-Cookie",
-    "rc_admin=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
-  );
+  const parts = [
+    "rc_admin=",
+    "Path=/",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (ADMIN_WEB_COOKIE_SECURE) {
+    parts.push("Secure");
+  }
+  res.setHeader("Set-Cookie", parts.join("; "));
 }
 
 function escapeHtml(input) {
@@ -978,6 +1235,7 @@ function renderAdminDashboardPage() {
         <button id="refresh-btn">Refresh</button>
         <a class="ghost" href="/admin/api/export/users.csv">Download Users CSV</a>
         <a class="ghost" href="/admin/api/export/reminder_logs.csv">Download Logs CSV</a>
+        <a class="ghost" href="/admin/api/export/postpartum_logs.csv">Download Postpartum CSV</a>
         <form method="post" action="/admin/logout">
           <button type="submit" class="ghost">Logout</button>
         </form>
@@ -1063,6 +1321,22 @@ function renderAdminDashboardPage() {
             </thead>
             <tbody id="detail-delivery-body">
               <tr><td colspan="2" class="muted">Belum ada data persalinan.</td></tr>
+            </tbody>
+          </table>
+          <div class="section-title">History Kunjungan Nifas & Bayi</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Kode</th>
+                <th>Jenis</th>
+                <th>Rentang</th>
+                <th>Waktu Reminder</th>
+                <th>Jawaban</th>
+                <th>Waktu Jawab</th>
+              </tr>
+            </thead>
+            <tbody id="detail-postpartum-body">
+              <tr><td colspan="6" class="muted">Belum ada history kunjungan.</td></tr>
             </tbody>
           </table>
           <div class="section-title">History Reminder</div>
@@ -1187,6 +1461,31 @@ function renderAdminDashboardPage() {
           tbody.appendChild(tr);
         }
       }
+      function renderPostpartumLogs(logs) {
+        const tbody = document.getElementById('detail-postpartum-body');
+        if (!logs || !logs.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="muted">Belum ada history kunjungan.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = '';
+        for (const log of logs) {
+          const tr = document.createElement('tr');
+          const cells = [
+            log.visit_code,
+            log.visit_kind,
+            log.window_text,
+            log.sent_at,
+            log.response,
+            log.response_at
+          ];
+          for (const value of cells) {
+            const td = document.createElement('td');
+            td.textContent = fmt(value);
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+      }
       async function openUserDetail(waId) {
         overlay.classList.add('show');
         document.getElementById('detail-name').textContent = 'Detail User';
@@ -1201,6 +1500,8 @@ function renderAdminDashboardPage() {
         document.getElementById('detail-total-belum').textContent = '-';
         const deliveryBody = document.getElementById('detail-delivery-body');
         deliveryBody.innerHTML = '<tr><td colspan="2" class="muted">Memuat data...</td></tr>';
+        const postpartumBody = document.getElementById('detail-postpartum-body');
+        postpartumBody.innerHTML = '<tr><td colspan="6" class="muted">Memuat data...</td></tr>';
         const detailBody = document.getElementById('detail-logs-body');
         detailBody.innerHTML = '<tr><td colspan="5" class="muted">Memuat data...</td></tr>';
         try {
@@ -1213,6 +1514,7 @@ function renderAdminDashboardPage() {
           document.getElementById('detail-total-sudah').textContent = fmt(data.totals.total_sudah);
           document.getElementById('detail-total-belum').textContent = fmt(data.totals.total_belum);
           renderDeliveryDetails(user);
+          renderPostpartumLogs(data.postpartum_logs || []);
           detailBody.innerHTML = '';
           if (!data.logs.length) {
             detailBody.innerHTML = '<tr><td colspan="5" class="muted">Belum ada history.</td></tr>';
@@ -1236,6 +1538,7 @@ function renderAdminDashboardPage() {
           }
         } catch (err) {
           deliveryBody.innerHTML = '<tr><td colspan="2" class="muted">Gagal memuat data persalinan.</td></tr>';
+          postpartumBody.innerHTML = '<tr><td colspan="6" class="muted">Gagal memuat history kunjungan.</td></tr>';
           detailBody.innerHTML = '<tr><td colspan="5" class="muted">Gagal memuat detail.</td></tr>';
         }
       }
@@ -1356,6 +1659,12 @@ async function ensureUserColumns(db) {
   await ensureColumn(
     db,
     "users",
+    "last_reminder_text_date",
+    "last_reminder_text_date TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
     "last_delivery_poll_message_id",
     "last_delivery_poll_message_id TEXT",
   );
@@ -1364,6 +1673,42 @@ async function ensureUserColumns(db) {
     "users",
     "delivery_poll_stage",
     "delivery_poll_stage TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "fe_poll_last_attempt_at",
+    "fe_poll_last_attempt_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "fe_poll_fail_count",
+    "fe_poll_fail_count INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_poll_last_attempt_at",
+    "delivery_poll_last_attempt_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_poll_fail_count",
+    "delivery_poll_fail_count INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_poll_intro_stage",
+    "delivery_poll_intro_stage TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_poll_intro_date",
+    "delivery_poll_intro_date TEXT",
   );
   await ensureColumn(
     db,
@@ -1408,7 +1753,12 @@ async function ensureUserColumns(db) {
     "delivery_data_step INTEGER NOT NULL DEFAULT 0",
   );
   await ensureColumn(db, "users", "delivery_date", "delivery_date TEXT");
-  await ensureColumn(db, "users", "delivery_date_iso", "delivery_date_iso TEXT");
+  await ensureColumn(
+    db,
+    "users",
+    "delivery_date_iso",
+    "delivery_date_iso TEXT",
+  );
   await ensureColumn(db, "users", "delivery_time", "delivery_time TEXT");
   await ensureColumn(db, "users", "delivery_place", "delivery_place TEXT");
   await ensureColumn(
@@ -1424,7 +1774,12 @@ async function ensureUserColumns(db) {
     "delivery_with_complication TEXT",
   );
   await ensureColumn(db, "users", "baby_gender", "baby_gender TEXT");
-  await ensureColumn(db, "users", "baby_birth_weight", "baby_birth_weight TEXT");
+  await ensureColumn(
+    db,
+    "users",
+    "baby_birth_weight",
+    "baby_birth_weight TEXT",
+  );
   await ensureColumn(
     db,
     "users",
@@ -1436,6 +1791,12 @@ async function ensureUserColumns(db) {
     "users",
     "delivery_data_completed_at",
     "delivery_data_completed_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "postpartum_education_sent_at",
+    "postpartum_education_sent_at TEXT",
   );
 }
 
@@ -1455,6 +1816,45 @@ async function ensureReminderLogColumns(db) {
   await ensureColumn(
     db,
     "reminder_logs",
+    "response_belum_count",
+    "response_belum_count INTEGER NOT NULL DEFAULT 0",
+  );
+}
+
+async function ensurePostpartumLogColumns(db) {
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
+    "reminder_text_sent_at",
+    "reminder_text_sent_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
+    "last_attempt_at",
+    "last_attempt_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
+    "fail_count",
+    "fail_count INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
+    "response_count",
+    "response_count INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
+    "response_sudah_count",
+    "response_sudah_count INTEGER NOT NULL DEFAULT 0",
+  );
+  await ensureColumn(
+    db,
+    "postpartum_visit_logs",
     "response_belum_count",
     "response_belum_count INTEGER NOT NULL DEFAULT 0",
   );
@@ -1484,8 +1884,15 @@ async function initDb(db) {
       last_reminder_date TEXT,
       last_poll_message_id TEXT,
       last_labor_phase_message_date TEXT,
+      last_reminder_text_date TEXT,
       last_delivery_poll_message_id TEXT,
       delivery_poll_stage TEXT,
+      fe_poll_last_attempt_at TEXT,
+      fe_poll_fail_count INTEGER NOT NULL DEFAULT 0,
+      delivery_poll_last_attempt_at TEXT,
+      delivery_poll_fail_count INTEGER NOT NULL DEFAULT 0,
+      delivery_poll_intro_stage TEXT,
+      delivery_poll_intro_date TEXT,
       delivery_hpl_poll_sent_date TEXT,
       delivery_hpl_response TEXT,
       delivery_hpl_response_at TEXT,
@@ -1503,6 +1910,7 @@ async function initDb(db) {
       baby_birth_weight TEXT,
       mother_current_complaint TEXT,
       delivery_data_completed_at TEXT,
+      postpartum_education_sent_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
@@ -1523,8 +1931,52 @@ async function initDb(db) {
     )`,
   );
 
+  await dbRun(
+    db,
+    `CREATE TABLE IF NOT EXISTS postpartum_visit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wa_id TEXT NOT NULL,
+      visit_code TEXT NOT NULL,
+      visit_kind TEXT NOT NULL,
+      visit_label TEXT NOT NULL,
+      window_text TEXT NOT NULL,
+      benefit_text TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      reminder_text_sent_at TEXT,
+      sent_at TEXT,
+      poll_message_id TEXT,
+      last_attempt_at TEXT,
+      fail_count INTEGER NOT NULL DEFAULT 0,
+      response TEXT,
+      response_count INTEGER NOT NULL DEFAULT 0,
+      response_sudah_count INTEGER NOT NULL DEFAULT 0,
+      response_belum_count INTEGER NOT NULL DEFAULT 0,
+      response_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(wa_id, visit_code)
+    )`,
+  );
+
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_users_active_loop
+     ON users (status, allow_remindcare, is_blocked, reminder_time, last_reminder_date)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_postpartum_logs_wa_due
+     ON postpartum_visit_logs (wa_id, due_at, sent_at, response)`,
+  );
+  await dbRun(
+    db,
+    `CREATE INDEX IF NOT EXISTS idx_postpartum_logs_poll
+     ON postpartum_visit_logs (wa_id, poll_message_id)`,
+  );
+
   await ensureUserColumns(db);
   await ensureReminderLogColumns(db);
+  await ensurePostpartumLogColumns(db);
 }
 
 async function getUser(db, waId) {
@@ -1784,6 +2236,34 @@ function buildCsv(rows, columns) {
   return [header, ...lines].join("\n");
 }
 
+function buildPostpartumSnapshot(postpartumLogs) {
+  const logs = Array.isArray(postpartumLogs) ? postpartumLogs : [];
+  const byCode = new Map(logs.map((item) => [item.visit_code, item]));
+  const total = logs.length;
+  const sent = logs.filter((item) => item.sent_at).length;
+  const sudah = logs.filter((item) => item.response === "Sudah").length;
+  const belum = logs.filter((item) => item.response === "Belum").length;
+  const pending = logs.filter((item) => item.sent_at && !item.response).length;
+
+  const snapshot = {
+    postpartum_total: total,
+    postpartum_sent: sent,
+    postpartum_sudah: sudah,
+    postpartum_belum: belum,
+    postpartum_pending: pending,
+  };
+
+  for (const visit of POSTPARTUM_VISIT_SCHEDULES) {
+    const key = visit.code.toLowerCase();
+    const log = byCode.get(visit.code) || null;
+    snapshot[`${key}_sent_at`] = log ? log.sent_at : null;
+    snapshot[`${key}_response`] = log ? log.response : null;
+    snapshot[`${key}_response_at`] = log ? log.response_at : null;
+  }
+
+  return snapshot;
+}
+
 async function getAdminSummary(db) {
   const total = await dbGet(db, "SELECT COUNT(*) as count FROM users");
   const active = await dbGet(
@@ -1852,6 +2332,10 @@ async function getAdminUsers(db) {
       u.baby_birth_weight,
       u.mother_current_complaint,
       u.delivery_data_completed_at,
+      COALESCE(pv.postpartum_total, 0) as postpartum_total,
+      COALESCE(pv.postpartum_sent, 0) as postpartum_sent,
+      COALESCE(pv.postpartum_sudah, 0) as postpartum_sudah,
+      COALESCE(pv.postpartum_belum, 0) as postpartum_belum,
       rl_last.reminder_date as last_response_date,
       rl_last.response as last_response,
       COALESCE(agg.total_sudah, 0) as total_sudah,
@@ -1864,6 +2348,15 @@ async function getAdminUsers(db) {
        FROM reminder_logs
        GROUP BY wa_id
      ) agg ON agg.wa_id = u.wa_id
+     LEFT JOIN (
+       SELECT wa_id,
+              COUNT(*) as postpartum_total,
+              SUM(CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) as postpartum_sent,
+              SUM(CASE WHEN response = 'Sudah' THEN 1 ELSE 0 END) as postpartum_sudah,
+              SUM(CASE WHEN response = 'Belum' THEN 1 ELSE 0 END) as postpartum_belum
+       FROM postpartum_visit_logs
+       GROUP BY wa_id
+     ) pv ON pv.wa_id = u.wa_id
      LEFT JOIN reminder_logs rl_last
        ON rl_last.wa_id = u.wa_id
        AND rl_last.reminder_date = (
@@ -1876,6 +2369,7 @@ async function getAdminUsers(db) {
 }
 
 async function deleteUserData(db, waId) {
+  await dbRun(db, "DELETE FROM postpartum_visit_logs WHERE wa_id = ?", [waId]);
   await dbRun(db, "DELETE FROM reminder_logs WHERE wa_id = ?", [waId]);
   await dbRun(db, "DELETE FROM users WHERE wa_id = ?", [waId]);
 }
@@ -1904,6 +2398,43 @@ async function getUserDetail(db, waId) {
      ORDER BY reminder_date DESC, id DESC`,
     [waId],
   );
+  const postpartumLogs = await dbAll(
+    db,
+    `SELECT
+       visit_code,
+       visit_kind,
+       visit_label,
+       window_text,
+       benefit_text,
+       due_at,
+       reminder_text_sent_at,
+       sent_at,
+       poll_message_id,
+       last_attempt_at,
+       fail_count,
+       response,
+       response_count,
+       response_sudah_count,
+       response_belum_count,
+       response_at,
+       created_at,
+       updated_at
+     FROM postpartum_visit_logs
+     WHERE wa_id = ?
+     ORDER BY due_at ASC, id ASC`,
+    [waId],
+  );
+  const postpartumTotals = await dbGet(
+    db,
+    `SELECT
+       COUNT(*) as total,
+       SUM(CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) as sent,
+       SUM(CASE WHEN response = 'Sudah' THEN 1 ELSE 0 END) as sudah,
+       SUM(CASE WHEN response = 'Belum' THEN 1 ELSE 0 END) as belum
+     FROM postpartum_visit_logs
+     WHERE wa_id = ?`,
+    [waId],
+  );
   return {
     user,
     totals: {
@@ -1911,6 +2442,17 @@ async function getUserDetail(db, waId) {
       total_belum: totals && totals.total_belum ? totals.total_belum : 0,
     },
     logs,
+    postpartum_logs: postpartumLogs,
+    postpartum_totals: {
+      total:
+        postpartumTotals && postpartumTotals.total ? postpartumTotals.total : 0,
+      sent:
+        postpartumTotals && postpartumTotals.sent ? postpartumTotals.sent : 0,
+      sudah:
+        postpartumTotals && postpartumTotals.sudah ? postpartumTotals.sudah : 0,
+      belum:
+        postpartumTotals && postpartumTotals.belum ? postpartumTotals.belum : 0,
+    },
   };
 }
 
@@ -1941,7 +2483,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Perintah admin hanya untuk admin ya. 🔒",
+      "Perintah admin hanya untuk admin ya. ðŸ”’",
     );
     return true;
   }
@@ -1951,7 +2493,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Perintah admin: admin stats, admin allow <wa_id>, admin block <wa_id>, admin unblock <wa_id>, admin purge logs <hari>. 🛠️",
+      "Perintah admin: admin stats, admin allow <wa_id>, admin block <wa_id>, admin unblock <wa_id>, admin purge logs <hari>. ðŸ› ï¸",
     );
     return true;
   }
@@ -1961,7 +2503,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Stat user: total ${stats.total}, aktif ${stats.active}, allowed ${stats.allowed}, blocked ${stats.blocked}. 📊`,
+      `Stat user: total ${stats.total}, aktif ${stats.active}, allowed ${stats.allowed}, blocked ${stats.blocked}. ðŸ“Š`,
     );
     return true;
   }
@@ -1972,7 +2514,7 @@ async function handleAdminCommand(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format: admin allow|block|unblock <wa_id>. ✍️",
+        "Format: admin allow|block|unblock <wa_id>. âœï¸",
       );
       return true;
     }
@@ -1989,7 +2531,7 @@ async function handleAdminCommand(db, client, user, text) {
     }
 
     await updateUser(db, targetUser.wa_id, updates);
-    await sendText(client, user.wa_id, `OK ${action} ${targetUser.wa_id}. ✅`);
+    await sendText(client, user.wa_id, `OK ${action} ${targetUser.wa_id}. âœ…`);
     return true;
   }
 
@@ -2006,7 +2548,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Log dibersihkan: ${removed} baris (retensi ${Number.isFinite(days) ? days : "-"} hari). 🧹`,
+      `Log dibersihkan: ${removed} baris (retensi ${Number.isFinite(days) ? days : "-"} hari). ðŸ§¹`,
     );
     return true;
   }
@@ -2014,7 +2556,7 @@ async function handleAdminCommand(db, client, user, text) {
   await sendText(
     client,
     user.wa_id,
-    "Perintah admin tidak dikenali. Ketik: admin help. 🤔",
+    "Perintah admin tidak dikenali. Ketik: admin help. ðŸ¤”",
   );
   return true;
 }
@@ -2103,9 +2645,334 @@ async function recordDailyResponse(db, waId, dateKey, response) {
   return { allowed, limit, count: currentCount };
 }
 
+async function clearPostpartumVisitLogs(db, waId) {
+  await dbRun(db, "DELETE FROM postpartum_visit_logs WHERE wa_id = ?", [waId]);
+}
+
+async function getPostpartumVisitLogs(db, waId) {
+  return dbAll(
+    db,
+    `SELECT
+      id,
+      wa_id,
+      visit_code,
+      visit_kind,
+      visit_label,
+      window_text,
+      benefit_text,
+      due_at,
+      reminder_text_sent_at,
+      sent_at,
+      poll_message_id,
+      last_attempt_at,
+      fail_count,
+      response,
+      response_count,
+      response_sudah_count,
+      response_belum_count,
+      response_at,
+      created_at,
+      updated_at
+     FROM postpartum_visit_logs
+     WHERE wa_id = ?
+     ORDER BY due_at ASC, id ASC`,
+    [waId],
+  );
+}
+
+async function getPostpartumVisitLogByPollMessageId(db, waId, pollMessageId) {
+  if (!pollMessageId) {
+    return null;
+  }
+  return dbGet(
+    db,
+    `SELECT *
+     FROM postpartum_visit_logs
+     WHERE wa_id = ? AND poll_message_id = ?`,
+    [waId, pollMessageId],
+  );
+}
+
+async function getLatestPendingPostpartumVisitLog(db, waId) {
+  return dbGet(
+    db,
+    `SELECT *
+     FROM postpartum_visit_logs
+     WHERE wa_id = ?
+       AND poll_message_id IS NOT NULL
+       AND response IS NULL
+     ORDER BY sent_at DESC, id DESC
+     LIMIT 1`,
+    [waId],
+  );
+}
+
+async function ensurePostpartumVisitLog(db, waId, visit, dueAt) {
+  const nowIso = nowWib().toISO();
+  await dbRun(
+    db,
+    `INSERT OR IGNORE INTO postpartum_visit_logs (
+      wa_id,
+      visit_code,
+      visit_kind,
+      visit_label,
+      window_text,
+      benefit_text,
+      due_at,
+      reminder_text_sent_at,
+      sent_at,
+      poll_message_id,
+      last_attempt_at,
+      fail_count,
+      response,
+      response_count,
+      response_sudah_count,
+      response_belum_count,
+      response_at,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, NULL, 0, 0, 0, NULL, ?, ?)`,
+    [
+      waId,
+      visit.code,
+      visit.kind,
+      visit.label,
+      visit.windowText,
+      visit.benefitText,
+      dueAt.toISO(),
+      nowIso,
+      nowIso,
+    ],
+  );
+}
+
+async function markPostpartumVisitSent(db, waId, visitCode, pollMessageId) {
+  const nowIso = nowWib().toISO();
+  await dbRun(
+    db,
+    `UPDATE postpartum_visit_logs
+     SET sent_at = ?,
+         poll_message_id = ?,
+         last_attempt_at = ?,
+         fail_count = 0,
+         updated_at = ?
+     WHERE wa_id = ? AND visit_code = ?`,
+    [nowIso, pollMessageId, nowIso, nowIso, waId, visitCode],
+  );
+}
+
+async function markPostpartumVisitTextSent(db, waId, visitCode) {
+  const nowIso = nowWib().toISO();
+  await dbRun(
+    db,
+    `UPDATE postpartum_visit_logs
+     SET reminder_text_sent_at = COALESCE(reminder_text_sent_at, ?),
+         updated_at = ?
+     WHERE wa_id = ? AND visit_code = ?`,
+    [nowIso, nowIso, waId, visitCode],
+  );
+}
+
+async function markPostpartumVisitSendFailed(db, waId, visitCode, failCount) {
+  const nowIso = nowWib().toISO();
+  const nextFailCount =
+    Number.isFinite(Number(failCount)) && Number(failCount) >= 0
+      ? Number(failCount) + 1
+      : 1;
+  await dbRun(
+    db,
+    `UPDATE postpartum_visit_logs
+     SET last_attempt_at = ?,
+         fail_count = ?,
+         updated_at = ?
+     WHERE wa_id = ? AND visit_code = ?`,
+    [nowIso, nextFailCount, nowIso, waId, visitCode],
+  );
+}
+
+async function recordPostpartumVisitResponse(db, visitLog, response) {
+  const sudahCount =
+    visitLog && Number.isFinite(Number(visitLog.response_sudah_count))
+      ? Number(visitLog.response_sudah_count)
+      : 0;
+  const belumCount =
+    visitLog && Number.isFinite(Number(visitLog.response_belum_count))
+      ? Number(visitLog.response_belum_count)
+      : 0;
+  const responseCount =
+    visitLog && Number.isFinite(Number(visitLog.response_count))
+      ? Number(visitLog.response_count)
+      : 0;
+  const limit = getMaxPollResponsesPerDay();
+  const isSudah = response === "Sudah";
+  const currentCount = isSudah ? sudahCount : belumCount;
+  const allowed = limit === null || currentCount < limit;
+  const nextSudah = isSudah && allowed ? sudahCount + 1 : sudahCount;
+  const nextBelum = !isSudah && allowed ? belumCount + 1 : belumCount;
+  const nextResponseCount = allowed ? responseCount + 1 : responseCount;
+  const nowIso = nowWib().toISO();
+  await dbRun(
+    db,
+    `UPDATE postpartum_visit_logs
+     SET response = ?,
+         response_count = ?,
+         response_sudah_count = ?,
+         response_belum_count = ?,
+         response_at = ?,
+         updated_at = ?
+     WHERE id = ?`,
+    [
+      response,
+      nextResponseCount,
+      nextSudah,
+      nextBelum,
+      nowIso,
+      nowIso,
+      visitLog.id,
+    ],
+  );
+  return { allowed, limit, count: currentCount };
+}
+
+async function sendPostpartumEducationIfNeeded(db, client, user, now) {
+  if (
+    !isPostpartumMonitoringActive(user) ||
+    user.postpartum_education_sent_at
+  ) {
+    return false;
+  }
+  const sent = await sendText(
+    client,
+    user.wa_id,
+    buildPostpartumEducationMessage(user, now),
+  );
+  if (!sent) {
+    return false;
+  }
+  await updateUser(db, user.wa_id, {
+    postpartum_education_sent_at: now.toISO(),
+  });
+  return true;
+}
+
+async function sendPostpartumVisitReminder(
+  db,
+  client,
+  user,
+  visit,
+  visitLog,
+  now,
+) {
+  if (
+    !canAttemptByBackoff(
+      visitLog && visitLog.last_attempt_at ? visitLog.last_attempt_at : null,
+      visitLog && visitLog.fail_count ? visitLog.fail_count : 0,
+      now,
+    )
+  ) {
+    return false;
+  }
+
+  if (!visitLog || !visitLog.reminder_text_sent_at) {
+    const reminderText = buildPostpartumVisitMessage(user, visit);
+    const textSent = await sendText(client, user.wa_id, reminderText);
+    if (textSent) {
+      await markPostpartumVisitTextSent(db, user.wa_id, visit.code);
+    }
+  }
+
+  const poll = new Poll(
+    buildPostpartumVisitQuestion(visit),
+    POSTPARTUM_POLL_OPTIONS,
+    {
+      allowMultipleAnswers: false,
+    },
+  );
+  const message = await sendPoll(client, user.wa_id, poll);
+  if (!message || !message.id || !message.id._serialized) {
+    console.error(
+      "Gagal mengirim polling kunjungan untuk:",
+      user.wa_id,
+      visit.code,
+    );
+    await markPostpartumVisitSendFailed(
+      db,
+      user.wa_id,
+      visit.code,
+      visitLog && visitLog.fail_count ? visitLog.fail_count : 0,
+    );
+    return false;
+  }
+
+  await markPostpartumVisitSent(
+    db,
+    user.wa_id,
+    visit.code,
+    message.id._serialized,
+  );
+  return true;
+}
+
+async function processPostpartumVisitReminders(db, client, user, now) {
+  if (!isPostpartumMonitoringActive(user)) {
+    return;
+  }
+  const deliveryAt = getDeliveryDateTime(user);
+  if (!deliveryAt) {
+    return;
+  }
+
+  await sendPostpartumEducationIfNeeded(db, client, user, now);
+  const logs = await getPostpartumVisitLogs(db, user.wa_id);
+  const logByCode = new Map(logs.map((item) => [item.visit_code, item]));
+
+  for (const visit of POSTPARTUM_VISIT_SCHEDULES) {
+    const dueAt = getPostpartumDueAt(deliveryAt, visit);
+    if (!dueAt) {
+      continue;
+    }
+
+    let log = logByCode.get(visit.code);
+    if (!log) {
+      await ensurePostpartumVisitLog(db, user.wa_id, visit, dueAt);
+      log = {
+        visit_code: visit.code,
+        reminder_text_sent_at: null,
+        sent_at: null,
+        last_attempt_at: null,
+        fail_count: 0,
+      };
+      logByCode.set(visit.code, log);
+    }
+
+    if (log.sent_at || log.response || now < dueAt) {
+      continue;
+    }
+
+    await sendPostpartumVisitReminder(db, client, user, visit, log, now);
+  }
+}
+
 async function sendDailyPoll(db, client, user, now) {
-  const reminderText = buildReminderMessage(user, now);
-  await sendText(client, user.wa_id, reminderText);
+  if (
+    !canAttemptByBackoff(
+      user.fe_poll_last_attempt_at,
+      user.fe_poll_fail_count,
+      now,
+    )
+  ) {
+    return false;
+  }
+
+  const dateKey = toDateKey(now);
+  if (user.last_reminder_text_date !== dateKey) {
+    const reminderText = buildReminderMessage(user, now);
+    const reminderSent = await sendText(client, user.wa_id, reminderText);
+    if (reminderSent) {
+      await updateUser(db, user.wa_id, { last_reminder_text_date: dateKey });
+    }
+  }
 
   const poll = new Poll(buildReminderQuestion(), REMINDER_POLL_OPTIONS, {
     allowMultipleAnswers: false,
@@ -2114,16 +2981,27 @@ async function sendDailyPoll(db, client, user, now) {
   const message = await sendPoll(client, user.wa_id, poll);
   if (!message || !message.id || !message.id._serialized) {
     console.error("Gagal mengirim polling untuk:", user.wa_id);
-    return;
+    const failCount =
+      Number.isFinite(Number(user.fe_poll_fail_count)) &&
+      Number(user.fe_poll_fail_count) >= 0
+        ? Number(user.fe_poll_fail_count) + 1
+        : 1;
+    await updateUser(db, user.wa_id, {
+      fe_poll_last_attempt_at: now.toISO(),
+      fe_poll_fail_count: failCount,
+    });
+    return false;
   }
-  const dateKey = toDateKey(now);
 
   await updateUser(db, user.wa_id, {
     last_reminder_date: dateKey,
     last_poll_message_id: message.id._serialized,
+    fe_poll_last_attempt_at: now.toISO(),
+    fe_poll_fail_count: 0,
   });
 
   await ensureReminderLog(db, user.wa_id, dateKey);
+  return true;
 }
 
 async function sendLaborPhaseMessage(db, client, user, now) {
@@ -2144,8 +3022,30 @@ async function sendLaborPhaseMessage(db, client, user, now) {
 }
 
 async function sendDeliveryValidationPoll(db, client, user, now, stage) {
-  const intro = buildDeliveryValidationMessage(user, now, stage);
-  await sendText(client, user.wa_id, intro);
+  if (
+    !canAttemptByBackoff(
+      user.delivery_poll_last_attempt_at,
+      user.delivery_poll_fail_count,
+      now,
+    )
+  ) {
+    return false;
+  }
+
+  const today = toDateKey(now);
+  const shouldSendIntro =
+    user.delivery_poll_intro_stage !== stage ||
+    user.delivery_poll_intro_date !== today;
+  if (shouldSendIntro) {
+    const intro = buildDeliveryValidationMessage(user, now, stage);
+    const introSent = await sendText(client, user.wa_id, intro);
+    if (introSent) {
+      await updateUser(db, user.wa_id, {
+        delivery_poll_intro_stage: stage,
+        delivery_poll_intro_date: today,
+      });
+    }
+  }
 
   const poll = new Poll(
     buildDeliveryValidationQuestion(),
@@ -2155,13 +3055,23 @@ async function sendDeliveryValidationPoll(db, client, user, now, stage) {
   const message = await sendPoll(client, user.wa_id, poll);
   if (!message || !message.id || !message.id._serialized) {
     console.error("Gagal mengirim polling validasi lahir untuk:", user.wa_id);
+    const failCount =
+      Number.isFinite(Number(user.delivery_poll_fail_count)) &&
+      Number(user.delivery_poll_fail_count) >= 0
+        ? Number(user.delivery_poll_fail_count) + 1
+        : 1;
+    await updateUser(db, user.wa_id, {
+      delivery_poll_last_attempt_at: now.toISO(),
+      delivery_poll_fail_count: failCount,
+    });
     return false;
   }
 
-  const today = toDateKey(now);
   const updates = {
     last_delivery_poll_message_id: message.id._serialized,
     delivery_poll_stage: stage,
+    delivery_poll_last_attempt_at: now.toISO(),
+    delivery_poll_fail_count: 0,
   };
   if (stage === "hpl") {
     updates.delivery_hpl_poll_sent_date = today;
@@ -2186,12 +3096,15 @@ function buildBelumDeliverySupportMessage(stage) {
     `Baca artikel lanjutan di: ${DELIVERY_ARTICLE_URL}`,
   ];
   if (stage === "hpl") {
-    lines.push("Kami akan menanyakan lagi pada H+3 dari HPL untuk memastikan kondisi Ibu.");
+    lines.push(
+      "Kami akan menanyakan lagi pada H+3 dari HPL untuk memastikan kondisi Ibu.",
+    );
   }
   return lines.join("\n");
 }
 
 async function startDeliveryDataCollection(db, client, user) {
+  await clearPostpartumVisitLogs(db, user.wa_id);
   await updateUser(db, user.wa_id, {
     delivery_data_step: 1,
     delivery_date: null,
@@ -2204,6 +3117,7 @@ async function startDeliveryDataCollection(db, client, user) {
     baby_birth_weight: null,
     mother_current_complaint: null,
     delivery_data_completed_at: null,
+    postpartum_education_sent_at: null,
   });
   await sendText(client, user.wa_id, DELIVERY_QUESTIONS[0].text);
 }
@@ -2237,6 +3151,8 @@ async function handleDeliveryValidationResponse(
   const updates = {
     delivery_poll_stage: null,
     last_delivery_poll_message_id: null,
+    delivery_poll_last_attempt_at: null,
+    delivery_poll_fail_count: 0,
   };
   if (stage === "hpl") {
     updates.delivery_hpl_response = response;
@@ -2275,7 +3191,11 @@ async function handleDeliveryDataAnswer(db, client, user, text) {
 
   const raw = text ? text.trim() : "";
   if (!raw) {
-    await sendText(client, user.wa_id, "Jawabannya belum terbaca. Bisa diulang?");
+    await sendText(
+      client,
+      user.wa_id,
+      "Jawabannya belum terbaca. Bisa diulang?",
+    );
     return true;
   }
 
@@ -2290,6 +3210,11 @@ async function handleDeliveryDataAnswer(db, client, user, text) {
       );
       return true;
     }
+    const dateValidation = validateDeliveryDateIso(parsed.iso, user, nowWib());
+    if (!dateValidation.valid) {
+      await sendText(client, user.wa_id, dateValidation.message);
+      return true;
+    }
     updates.delivery_date = parsed.raw;
     updates.delivery_date_iso = parsed.iso;
   } else if (question.type === "time") {
@@ -2300,6 +3225,17 @@ async function handleDeliveryDataAnswer(db, client, user, text) {
         user.wa_id,
         "Format jam belum sesuai. Contoh: 14:30.",
       );
+      return true;
+    }
+    const deliveryDateIso = user.delivery_date_iso || updates.delivery_date_iso;
+    const datetimeValidation = validateDeliveryDateTime(
+      user,
+      deliveryDateIso,
+      time,
+      nowWib(),
+    );
+    if (!datetimeValidation.valid) {
+      await sendText(client, user.wa_id, datetimeValidation.message);
       return true;
     }
     updates.delivery_time = time;
@@ -2320,11 +3256,19 @@ async function handleDeliveryDataAnswer(db, client, user, text) {
   if (nextStep > DELIVERY_QUESTIONS.length) {
     updates.delivery_data_step = 0;
     updates.delivery_data_completed_at = nowWib().toISO();
+    updates.postpartum_education_sent_at = null;
     await updateUser(db, user.wa_id, updates);
+    await clearPostpartumVisitLogs(db, user.wa_id);
     await sendText(
       client,
       user.wa_id,
       "Terima kasih, data persalinan sudah dicatat. Jika ada perubahan, kabari kami ya.",
+    );
+    await sendPostpartumEducationIfNeeded(
+      db,
+      client,
+      { ...user, ...updates },
+      nowWib(),
     );
     return true;
   }
@@ -2334,6 +3278,53 @@ async function handleDeliveryDataAnswer(db, client, user, text) {
     delivery_data_step: nextStep,
   });
   await sendText(client, user.wa_id, DELIVERY_QUESTIONS[nextStep - 1].text);
+  return true;
+}
+
+async function handlePostpartumVisitResponse(
+  db,
+  client,
+  user,
+  visitLog,
+  response,
+) {
+  if (!visitLog || (response !== "Sudah" && response !== "Belum")) {
+    return false;
+  }
+
+  const result = await recordPostpartumVisitResponse(db, visitLog, response);
+  if (!result.allowed) {
+    const visitLabel =
+      visitLog.visit_label || visitLog.visit_code || "kunjungan";
+    const limitText =
+      result.limit === null
+        ? `Jawaban ${visitLabel} sudah tercatat sebelumnya.`
+        : `Jawaban ${response.toLowerCase()} untuk ${visitLabel} sudah mencapai batas ${result.limit}x hari ini.`;
+    await sendText(
+      client,
+      user.wa_id,
+      `${limitText} Tidak perlu kirim ulang ya.`,
+    );
+    return true;
+  }
+
+  const visit = POSTPARTUM_VISIT_BY_CODE.get(visitLog.visit_code) || {
+    label: visitLog.visit_label || visitLog.visit_code,
+  };
+
+  if (response === "Sudah") {
+    await sendText(
+      client,
+      user.wa_id,
+      `Terima kasih, jawaban ${visit.label} sudah dicatat. Tetap lanjutkan kunjungan berikutnya sesuai jadwal ya.`,
+    );
+  } else {
+    await sendText(
+      client,
+      user.wa_id,
+      `Baik, jawaban ${visit.label} sudah dicatat. Mohon segera lakukan kunjungan ke tenaga kesehatan/fasilitas kesehatan.\nInfo lanjutan: ${DELIVERY_ARTICLE_URL}`,
+    );
+  }
   return true;
 }
 
@@ -2350,7 +3341,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Aku belum menangkap jawabannya. Bisa diulang? 🙂",
+      "Aku belum menangkap jawabannya. Bisa diulang? ðŸ™‚",
     );
     return;
   }
@@ -2360,7 +3351,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
   if (question.type === "yesno") {
     const yesNo = parseYesNo(text);
     if (yesNo === null) {
-      await sendText(client, user.wa_id, "Jawab dengan ya atau tidak, ya. 🙏");
+      await sendText(client, user.wa_id, "Jawab dengan ya atau tidak, ya. ðŸ™");
       return;
     }
     updates[question.field] = yesNo ? 1 : 0;
@@ -2375,7 +3366,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start. 👍",
+        "Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start. ðŸ‘",
       );
       return;
     }
@@ -2385,7 +3376,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format jam belum sesuai. Contoh: 17:00. ⏰",
+        "Format jam belum sesuai. Contoh: 17:00. â°",
       );
       return;
     }
@@ -2396,7 +3387,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format HPHT belum sesuai. Contoh: 31-01-2024. 📅",
+        "Format HPHT belum sesuai. Contoh: 31-01-2024. ðŸ“…",
       );
       return;
     }
@@ -2427,7 +3418,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap! RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB. ⏰✨`,
+      `Siap! RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB. â°âœ¨`,
     );
     return;
   }
@@ -2491,7 +3482,7 @@ async function handleCommand(db, client, user, text) {
 
   if (/^(stop|berhenti)$/.test(normalized)) {
     await updateUser(db, user.wa_id, { allow_remindcare: 0, status: "paused" });
-    await sendText(client, user.wa_id, "Oke, pengingat dihentikan dulu. ⏸️");
+    await sendText(client, user.wa_id, "Oke, pengingat dihentikan dulu. â¸ï¸");
     return true;
   }
 
@@ -2510,7 +3501,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB. ✅⏰`,
+      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB. âœ…â°`,
     );
     return true;
   }
@@ -2523,7 +3514,7 @@ async function handleCommand(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format jam belum sesuai. Contoh: ubah jam 17:00. ⏰",
+        "Format jam belum sesuai. Contoh: ubah jam 17:00. â°",
       );
       return true;
     }
@@ -2535,7 +3526,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Jam pengingat diubah ke ${time} WIB. ✅⏰`,
+      `Jam pengingat diubah ke ${time} WIB. âœ…â°`,
     );
     return true;
   }
@@ -2547,13 +3538,30 @@ async function handleDailyResponse(db, client, user, response) {
   const dateKey = toDateKey(nowWib());
   const result = await recordDailyResponse(db, user.wa_id, dateKey, response);
   if (!result.allowed) {
+    const limitText =
+      result.limit === null
+        ? "Jawaban sudah tercatat sebelumnya."
+        : `Jawaban ${response.toLowerCase()} sudah mencapai batas ${result.limit}x hari ini.`;
+    await sendText(
+      client,
+      user.wa_id,
+      `${limitText} Tidak perlu kirim ulang ya.`,
+    );
     return;
   }
 
   if (response === "Sudah") {
-    await sendText(client, user.wa_id, "Terima kasih. Semoga sehat selalu. 🌼");
+    await sendText(
+      client,
+      user.wa_id,
+      "Terima kasih. Semoga sehat selalu. ðŸŒ¼",
+    );
   } else if (response === "Belum") {
-    await sendText(client, user.wa_id, "Baik, jangan lupa diminum ya. 💊🙂");
+    await sendText(
+      client,
+      user.wa_id,
+      "Baik, jangan lupa diminum ya. ðŸ’ŠðŸ™‚",
+    );
   }
 }
 
@@ -2573,7 +3581,7 @@ async function handleMessage(db, client, msg) {
       await sendText(
         client,
         waId,
-        "Terlalu banyak pesan. Coba lagi sebentar. ⏳",
+        "Terlalu banyak pesan. Coba lagi sebentar. â³",
       );
     }
     return;
@@ -2593,7 +3601,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Nomor ini belum diizinkan. Hubungi admin. 🚫",
+      "Nomor ini belum diizinkan. Hubungi admin. ðŸš«",
     );
     return;
   }
@@ -2601,7 +3609,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Halo! 👋 Aku RemindCare, bot pengingat tablet FE untuk ibu hamil supaya minum obat tepat waktu. 🤰💊\n\nUntuk mulai, ketik start ya. ✨\n\nCara pakai: jawab pertanyaan, pilih jam pengingat, lalu terima reminder harian. ⏰\nBaca artikel seputar kehamilan di remindcares.web.app 📚🌐",
+      "Halo! ðŸ‘‹ Aku RemindCare, bot pengingat tablet FE untuk ibu hamil supaya minum obat tepat waktu. ðŸ¤°ðŸ’Š\n\nUntuk mulai, ketik start ya. âœ¨\n\nCara pakai: jawab pertanyaan, pilih jam pengingat, lalu terima reminder harian. â°\nBaca artikel seputar kehamilan di remindcares.web.app ðŸ“šðŸŒ",
     );
     return;
   }
@@ -2616,7 +3624,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Nomor ini belum diizinkan. Hubungi admin. 🚫",
+      "Nomor ini belum diizinkan. Hubungi admin. ðŸš«",
     );
     return;
   }
@@ -2662,22 +3670,38 @@ async function handleMessage(db, client, msg) {
   const pollAnswer = parsePollAnswer(text);
   if (pollAnswer) {
     const today = toDateKey(nowWib());
-    if (user.last_reminder_date !== today) {
-      await sendText(
+    if (user.last_reminder_date === today) {
+      await handleDailyResponse(db, client, user, pollAnswer);
+      return;
+    }
+
+    const pendingPostpartumLog = await getLatestPendingPostpartumVisitLog(
+      db,
+      waId,
+    );
+    if (pendingPostpartumLog) {
+      await handlePostpartumVisitResponse(
+        db,
         client,
-        waId,
-        "Belum ada polling hari ini. Tunggu pengingat berikutnya ya. ⏳",
+        user,
+        pendingPostpartumLog,
+        pollAnswer,
       );
       return;
     }
-    await handleDailyResponse(db, client, user, pollAnswer);
+
+    await sendText(
+      client,
+      waId,
+      "Belum ada polling hari ini. Tunggu pengingat berikutnya ya. ⏳",
+    );
     return;
   }
 
   await sendText(
     client,
     waId,
-    "Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah. 💬📋",
+    "Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah. ðŸ’¬ðŸ“‹",
   );
 }
 
@@ -2698,7 +3722,7 @@ async function handleVoteUpdate(db, client, vote) {
       await sendText(
         client,
         waId,
-        "Terlalu banyak pesan. Coba lagi sebentar. â³",
+        "Terlalu banyak pesan. Coba lagi sebentar. Ã¢ÂÂ³",
       );
     }
     return;
@@ -2737,6 +3761,22 @@ async function handleVoteUpdate(db, client, vote) {
     return;
   }
 
+  const postpartumLog = await getPostpartumVisitLogByPollMessageId(
+    db,
+    waId,
+    pollMessageId,
+  );
+  if (postpartumLog) {
+    await handlePostpartumVisitResponse(
+      db,
+      client,
+      user,
+      postpartumLog,
+      response,
+    );
+    return;
+  }
+
   const isFePoll =
     user.last_poll_message_id &&
     pollMessageId &&
@@ -2746,6 +3786,58 @@ async function handleVoteUpdate(db, client, vote) {
   }
 
   await handleDailyResponse(db, client, user, response);
+}
+
+function getReminderLoopConcurrency() {
+  if (!Number.isFinite(REMINDER_LOOP_CONCURRENCY)) {
+    return 10;
+  }
+  const rounded = Math.floor(REMINDER_LOOP_CONCURRENCY);
+  if (rounded <= 0) {
+    return 1;
+  }
+  return rounded;
+}
+
+async function processUserReminderTick(db, client, user, now, today) {
+  if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
+    return;
+  }
+
+  const postpartumActive = isPostpartumMonitoringActive(user);
+  if (postpartumActive) {
+    await processPostpartumVisitReminders(db, client, user, now);
+  }
+
+  if (!shouldSendNow(user.reminder_time, now)) {
+    return;
+  }
+
+  if (!isPregnancyActive(user, now) && !postpartumActive) {
+    await updateUser(db, user.wa_id, {
+      status: "completed",
+      allow_remindcare: 0,
+    });
+    await sendText(
+      client,
+      user.wa_id,
+      "Masa pengingat kehamilan sudah selesai. Jika ingin lanjut, balas start.",
+    );
+    return;
+  }
+
+  await sendLaborPhaseMessage(db, client, user, now);
+
+  const deliveryStage = getDeliveryValidationStageDue(user, now);
+  if (deliveryStage) {
+    await sendDeliveryValidationPoll(db, client, user, now, deliveryStage);
+  }
+
+  if (user.last_reminder_date === today) {
+    return;
+  }
+
+  await sendDailyPoll(db, client, user, now);
 }
 
 async function startReminderLoop(db, client) {
@@ -2776,40 +3868,18 @@ async function startReminderLoop(db, client) {
          AND is_blocked = 0`,
       );
 
-      for (const user of users) {
-        if (!shouldSendNow(user.reminder_time, now)) {
-          continue;
-        }
-
-        if (ENFORCE_ALLOWLIST && !user.is_allowed && !user.is_admin) {
-          continue;
-        }
-
-        if (!isPregnancyActive(user, now)) {
-          await updateUser(db, user.wa_id, {
-            status: "completed",
-            allow_remindcare: 0,
-          });
-          await sendText(
-            client,
-            user.wa_id,
-            "Masa pengingat kehamilan sudah selesai. Jika ingin lanjut, balas start.",
-          );
-          continue;
-        }
-
-        await sendLaborPhaseMessage(db, client, user, now);
-
-        const deliveryStage = getDeliveryValidationStageDue(user, now);
-        if (deliveryStage) {
-          await sendDeliveryValidationPoll(db, client, user, now, deliveryStage);
-        }
-
-        if (user.last_reminder_date === today) {
-          continue;
-        }
-
-        await sendDailyPoll(db, client, user, now);
+      const concurrency = getReminderLoopConcurrency();
+      for (let i = 0; i < users.length; i += concurrency) {
+        const chunk = users.slice(i, i + concurrency);
+        await Promise.all(
+          chunk.map(async (user) => {
+            try {
+              await processUserReminderTick(db, client, user, now, today);
+            } catch (err) {
+              console.error("Gagal memproses reminder user:", user.wa_id, err);
+            }
+          }),
+        );
       }
     } catch (err) {
       console.error("Gagal menjalankan pengingat:", err);
@@ -2942,10 +4012,14 @@ function startAdminServer(db) {
           res.status(404).json({ error: "not_found" });
           return;
         }
+        const postpartumSnapshot = buildPostpartumSnapshot(
+          detail.postpartum_logs || [],
+        );
         const deliverySnapshot = {
           delivery_hpl_response: detail.user.delivery_hpl_response,
           delivery_hpl3_response: detail.user.delivery_hpl3_response,
-          delivery_date: detail.user.delivery_date_iso || detail.user.delivery_date,
+          delivery_date:
+            detail.user.delivery_date_iso || detail.user.delivery_date,
           delivery_time: detail.user.delivery_time,
           delivery_place: detail.user.delivery_place,
           delivery_birth_attendant: detail.user.delivery_birth_attendant,
@@ -2967,7 +4041,11 @@ function startAdminServer(db) {
                   created_at: null,
                 },
               ];
-        const rows = logs.map((log) => ({ ...log, ...deliverySnapshot }));
+        const rows = logs.map((log) => ({
+          ...log,
+          ...deliverySnapshot,
+          ...postpartumSnapshot,
+        }));
         const csv = buildCsv(rows, [
           { key: "reminder_date", label: "reminder_date" },
           { key: "response", label: "response" },
@@ -2997,6 +4075,32 @@ function startAdminServer(db) {
             key: "delivery_data_completed_at",
             label: "delivery_data_completed_at",
           },
+          { key: "postpartum_total", label: "postpartum_total" },
+          { key: "postpartum_sent", label: "postpartum_sent" },
+          { key: "postpartum_sudah", label: "postpartum_sudah" },
+          { key: "postpartum_belum", label: "postpartum_belum" },
+          { key: "postpartum_pending", label: "postpartum_pending" },
+          { key: "kf1_sent_at", label: "kf1_sent_at" },
+          { key: "kf1_response", label: "kf1_response" },
+          { key: "kf1_response_at", label: "kf1_response_at" },
+          { key: "kn1_sent_at", label: "kn1_sent_at" },
+          { key: "kn1_response", label: "kn1_response" },
+          { key: "kn1_response_at", label: "kn1_response_at" },
+          { key: "kf2_sent_at", label: "kf2_sent_at" },
+          { key: "kf2_response", label: "kf2_response" },
+          { key: "kf2_response_at", label: "kf2_response_at" },
+          { key: "kn2_sent_at", label: "kn2_sent_at" },
+          { key: "kn2_response", label: "kn2_response" },
+          { key: "kn2_response_at", label: "kn2_response_at" },
+          { key: "kf3_sent_at", label: "kf3_sent_at" },
+          { key: "kf3_response", label: "kf3_response" },
+          { key: "kf3_response_at", label: "kf3_response_at" },
+          { key: "kn3_sent_at", label: "kn3_sent_at" },
+          { key: "kn3_response", label: "kn3_response" },
+          { key: "kn3_response_at", label: "kn3_response_at" },
+          { key: "kf4_sent_at", label: "kf4_sent_at" },
+          { key: "kf4_response", label: "kf4_response" },
+          { key: "kf4_response_at", label: "kf4_response_at" },
         ]);
         res.setHeader("Content-Type", "text/csv; charset=utf-8");
         res.setHeader(
@@ -3046,7 +4150,14 @@ function startAdminServer(db) {
         { key: "baby_gender", label: "baby_gender" },
         { key: "baby_birth_weight", label: "baby_birth_weight" },
         { key: "mother_current_complaint", label: "mother_current_complaint" },
-        { key: "delivery_data_completed_at", label: "delivery_data_completed_at" },
+        {
+          key: "delivery_data_completed_at",
+          label: "delivery_data_completed_at",
+        },
+        { key: "postpartum_total", label: "postpartum_total" },
+        { key: "postpartum_sent", label: "postpartum_sent" },
+        { key: "postpartum_sudah", label: "postpartum_sudah" },
+        { key: "postpartum_belum", label: "postpartum_belum" },
       ]);
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
@@ -3095,6 +4206,70 @@ function startAdminServer(db) {
     },
   );
 
+  app.get(
+    "/admin/api/export/postpartum_logs.csv",
+    requireAdmin,
+    async (req, res) => {
+      try {
+        const logs = await dbAll(
+          db,
+          `SELECT
+            wa_id,
+            visit_code,
+            visit_kind,
+            visit_label,
+            window_text,
+            benefit_text,
+            due_at,
+            reminder_text_sent_at,
+            sent_at,
+            poll_message_id,
+            last_attempt_at,
+            fail_count,
+            response,
+            response_count,
+            response_sudah_count,
+            response_belum_count,
+            response_at,
+            created_at,
+            updated_at
+           FROM postpartum_visit_logs
+           ORDER BY due_at DESC, id DESC`,
+        );
+        const csv = buildCsv(logs, [
+          { key: "wa_id", label: "wa_id" },
+          { key: "visit_code", label: "visit_code" },
+          { key: "visit_kind", label: "visit_kind" },
+          { key: "visit_label", label: "visit_label" },
+          { key: "window_text", label: "window_text" },
+          { key: "benefit_text", label: "benefit_text" },
+          { key: "due_at", label: "due_at" },
+          { key: "reminder_text_sent_at", label: "reminder_text_sent_at" },
+          { key: "sent_at", label: "sent_at" },
+          { key: "poll_message_id", label: "poll_message_id" },
+          { key: "last_attempt_at", label: "last_attempt_at" },
+          { key: "fail_count", label: "fail_count" },
+          { key: "response", label: "response" },
+          { key: "response_count", label: "response_count" },
+          { key: "response_sudah_count", label: "response_sudah_count" },
+          { key: "response_belum_count", label: "response_belum_count" },
+          { key: "response_at", label: "response_at" },
+          { key: "created_at", label: "created_at" },
+          { key: "updated_at", label: "updated_at" },
+        ]);
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader(
+          "Content-Disposition",
+          'attachment; filename="postpartum_visit_logs.csv"',
+        );
+        res.send(csv);
+      } catch (err) {
+        console.error("Gagal export postpartum log:", err);
+        res.status(500).json({ error: "failed" });
+      }
+    },
+  );
+
   app.listen(ADMIN_WEB_PORT, () => {
     console.log(
       `Admin web berjalan di http://localhost:${ADMIN_WEB_PORT}/admin`,
@@ -3132,7 +4307,7 @@ async function main() {
   const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-      headless: true,
+      headless: false,
       ...(executablePath ? { executablePath } : {}),
       ...(puppeteerArgs.length ? { args: puppeteerArgs } : {}),
     },
@@ -3182,4 +4357,11 @@ module.exports = {
   getDeliveryValidationStageDue,
   buildLaborPhaseMessage,
   parseDeliveryValidationAnswer,
+  getDeliveryDateTime,
+  getPostpartumDueAt,
+  buildPostpartumSnapshot,
+  getRetryDelayMs,
+  canAttemptByBackoff,
+  validateDeliveryDateIso,
+  validateDeliveryDateTime,
 };

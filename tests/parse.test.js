@@ -10,7 +10,14 @@ const {
   getHplDate,
   getDeliveryValidationStageDue,
   buildLaborPhaseMessage,
-  parseDeliveryValidationAnswer
+  parseDeliveryValidationAnswer,
+  getDeliveryDateTime,
+  getPostpartumDueAt,
+  buildPostpartumSnapshot,
+  getRetryDelayMs,
+  canAttemptByBackoff,
+  validateDeliveryDateIso,
+  validateDeliveryDateTime
 } = require('../index');
 
 function test(name, fn) {
@@ -90,4 +97,68 @@ test('parseDeliveryValidationAnswer only handles melahirkan intent', () => {
   assert.strictEqual(parseDeliveryValidationAnswer('Sudah melahirkan'), 'Sudah');
   assert.strictEqual(parseDeliveryValidationAnswer('Belum melahirkan'), 'Belum');
   assert.strictEqual(parseDeliveryValidationAnswer('sudah'), null);
+});
+
+test('getDeliveryDateTime returns valid datetime from delivery date+time', () => {
+  const deliveryAt = getDeliveryDateTime({
+    delivery_date_iso: '2026-01-10',
+    delivery_time: '14:30'
+  });
+  assert.ok(deliveryAt);
+  assert.strictEqual(deliveryAt.toFormat('yyyy-LL-dd HH:mm'), '2026-01-10 14:30');
+});
+
+test('getPostpartumDueAt calculates due time based on visit start hour', () => {
+  const deliveryAt = DateTime.fromISO('2026-01-10T14:30:00', { zone: 'Asia/Jakarta' });
+  const dueAt = getPostpartumDueAt(deliveryAt, { startHours: 6 });
+  assert.ok(dueAt);
+  assert.strictEqual(dueAt.toFormat('yyyy-LL-dd HH:mm'), '2026-01-10 20:30');
+});
+
+test('buildPostpartumSnapshot summarizes visit status', () => {
+  const snapshot = buildPostpartumSnapshot([
+    { visit_code: 'KF1', sent_at: '2026-01-10T20:30:00', response: 'Sudah', response_at: '2026-01-10T21:00:00' },
+    { visit_code: 'KN1', sent_at: '2026-01-10T20:31:00', response: 'Belum', response_at: '2026-01-10T21:05:00' },
+    { visit_code: 'KF2', sent_at: '2026-01-13T14:30:00', response: null, response_at: null }
+  ]);
+  assert.strictEqual(snapshot.postpartum_total, 3);
+  assert.strictEqual(snapshot.postpartum_sent, 3);
+  assert.strictEqual(snapshot.postpartum_sudah, 1);
+  assert.strictEqual(snapshot.postpartum_belum, 1);
+  assert.strictEqual(snapshot.postpartum_pending, 1);
+  assert.strictEqual(snapshot.kf1_response, 'Sudah');
+  assert.strictEqual(snapshot.kn1_response, 'Belum');
+});
+
+test('retry backoff delay increases and caps', () => {
+  assert.strictEqual(getRetryDelayMs(0), 0);
+  assert.ok(getRetryDelayMs(1) > 0);
+  assert.ok(getRetryDelayMs(4) >= getRetryDelayMs(3));
+  assert.ok(getRetryDelayMs(20) <= 30 * 60 * 1000);
+});
+
+test('canAttemptByBackoff blocks during delay and allows after delay', () => {
+  const now = DateTime.fromISO('2026-02-19T10:00:00', { zone: 'Asia/Jakarta' });
+  const oneMinuteAgo = now.minus({ minutes: 1 }).toISO();
+  const tenMinutesAgo = now.minus({ minutes: 10 }).toISO();
+  assert.strictEqual(canAttemptByBackoff(oneMinuteAgo, 1, now), false);
+  assert.strictEqual(canAttemptByBackoff(tenMinutesAgo, 1, now), true);
+  assert.strictEqual(canAttemptByBackoff(null, 2, now), true);
+});
+
+test('validateDeliveryDateIso rejects future date and before hpht', () => {
+  const now = DateTime.fromISO('2026-02-19T10:00:00', { zone: 'Asia/Jakarta' });
+  const user = { hpht_iso: '2025-06-01' };
+  assert.strictEqual(validateDeliveryDateIso('2026-02-20', user, now).valid, false);
+  assert.strictEqual(validateDeliveryDateIso('2025-05-30', user, now).valid, false);
+  assert.strictEqual(validateDeliveryDateIso('2026-02-19', user, now).valid, true);
+});
+
+test('validateDeliveryDateTime rejects future time', () => {
+  const now = DateTime.fromISO('2026-02-19T10:00:00', { zone: 'Asia/Jakarta' });
+  const user = { hpht_iso: '2025-06-01' };
+  const future = validateDeliveryDateTime(user, '2026-02-19', '23:00', now);
+  const valid = validateDeliveryDateTime(user, '2026-02-19', '09:30', now);
+  assert.strictEqual(future.valid, false);
+  assert.strictEqual(valid.valid, true);
 });
