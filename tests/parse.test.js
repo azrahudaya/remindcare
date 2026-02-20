@@ -68,29 +68,35 @@ test('getHplDate calculates 40 weeks from hpht', () => {
   assert.strictEqual(hpl.toFormat('yyyy-LL-dd'), expected);
 });
 
-test('delivery validation stage is hpl and hpl+3', () => {
-  const hplNow = DateTime.fromISO('2024-10-07T09:00:00', { zone: 'Asia/Jakarta' });
-  const hpl3Now = hplNow.plus({ days: 3 });
+test('delivery validation stage starts at week 39 and repeats daily', () => {
+  const week38Now = DateTime.fromISO('2024-09-22T09:00:00', { zone: 'Asia/Jakarta' });
+  const week39Now = DateTime.fromISO('2024-09-23T09:00:00', { zone: 'Asia/Jakarta' });
   const baseUser = { hpht_iso: '2024-01-01' };
 
-  assert.strictEqual(getDeliveryValidationStageDue(baseUser, hplNow), 'hpl');
+  assert.strictEqual(getDeliveryValidationStageDue(baseUser, week38Now), null);
+  assert.strictEqual(getDeliveryValidationStageDue(baseUser, week39Now), 'week39_daily');
   assert.strictEqual(
     getDeliveryValidationStageDue(
-      { ...baseUser, delivery_hpl_response: 'Belum' },
-      hpl3Now,
+      { ...baseUser, delivery_hpl_poll_sent_date: '2024-09-23' },
+      week39Now,
     ),
-    'hpl3',
+    null,
+  );
+  assert.strictEqual(
+    getDeliveryValidationStageDue(
+      { ...baseUser, delivery_hpl_response: 'Sudah' },
+      week39Now,
+    ),
+    null,
   );
 });
 
-test('buildLaborPhaseMessage stops after hpl is answered', () => {
+test('buildLaborPhaseMessage stops only after delivery is confirmed', () => {
   const week37Now = DateTime.fromISO('2024-09-09T08:00:00', { zone: 'Asia/Jakarta' });
   const user = { hpht_iso: '2024-01-01' };
   assert.ok(buildLaborPhaseMessage(user, week37Now));
-  assert.strictEqual(
-    buildLaborPhaseMessage({ ...user, delivery_hpl_response: 'Belum' }, week37Now),
-    null,
-  );
+  assert.ok(buildLaborPhaseMessage({ ...user, delivery_hpl_response: 'Belum' }, week37Now));
+  assert.strictEqual(buildLaborPhaseMessage({ ...user, delivery_hpl_response: 'Sudah' }, week37Now), null);
 });
 
 test('parseDeliveryValidationAnswer only handles melahirkan intent', () => {

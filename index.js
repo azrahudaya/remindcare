@@ -12,16 +12,18 @@ const { Client, LocalAuth, Poll } = require("whatsapp-web.js");
 const TIMEZONE = "Asia/Jakarta";
 const PREGNANCY_WEEKS_LIMIT = Number(process.env.PREGNANCY_WEEKS_LIMIT || 42);
 const HPL_DAYS_FROM_HPHT = 280;
-const HPL_FOLLOW_UP_DAYS = 3;
-const REMINDER_POLL_QUESTION = "Sudah minum tablet FE hari ini? ðŸ’ŠðŸ˜Š";
-const REMINDER_POLL_OPTIONS = ["Sudah âœ…", "Belum â³"];
+const DELIVERY_VALIDATION_START_WEEK = Number(
+  process.env.DELIVERY_VALIDATION_START_WEEK || 39,
+);
+const REMINDER_POLL_QUESTION = "Sudah minum tablet FE hari ini? 💊😊";
+const REMINDER_POLL_OPTIONS = ["Sudah ✅", "Belum ⏳"];
 const DELIVERY_VALIDATION_POLL_QUESTION = "Apakah Ibu sudah melahirkan?";
 const DELIVERY_VALIDATION_POLL_OPTIONS = [
   "Sudah melahirkan",
   "Belum melahirkan",
 ];
 const DELIVERY_ARTICLE_URL = "https://remindcares.web.app";
-const POSTPARTUM_POLL_OPTIONS = ["Sudah âœ…", "Belum â³"];
+const POSTPARTUM_POLL_OPTIONS = ["Sudah ✅", "Belum ⏳"];
 const ENFORCE_ALLOWLIST = /^(1|true)$/i.test(
   process.env.ENFORCE_ALLOWLIST || "",
 );
@@ -75,35 +77,35 @@ const adminSessions = new Map();
 const deleteConfirmState = new Map();
 
 const QUESTIONS = [
-  { field: "name", text: "Halo, aku RemindCare. Boleh tau nama ibu? ðŸ˜Š" },
-  { field: "age", text: "Usia berapa? ðŸŽ‚" },
-  { field: "pregnancy_number", text: "Kehamilan ke berapa? ðŸ¤°" },
+  { field: "name", text: "Halo, aku RemindCare. Boleh tau nama ibu? 😊" },
+  { field: "age", text: "Usia berapa? 🎂" },
+  { field: "pregnancy_number", text: "Kehamilan ke berapa? 🤰" },
   {
     field: "hpht",
-    text: "HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024 ðŸ“…",
+    text: "HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024 📅",
   },
   {
     field: "routine_meds",
-    text: "Apakah rutin mengkonsumsi obat? (ya/tidak) ðŸ’Š",
+    text: "Apakah rutin mengkonsumsi obat? (ya/tidak) 💊",
     type: "yesno",
   },
   {
     field: "tea",
-    text: "Masih mengkonsumsi teh? (ya/tidak) ðŸµ",
+    text: "Masih mengkonsumsi teh? (ya/tidak) 🍵",
     type: "yesno",
   },
   {
     field: "reminder_person",
-    text: "Siapa yang biasanya ngingetin buat minum obat? ðŸ‘¥",
+    text: "Siapa yang biasanya ngingetin buat minum obat? 👥",
   },
   {
     field: "allow_remindcare",
-    text: "Mau diingatkan RemindCare untuk minum obat? (ya/tidak) ðŸ””",
+    text: "Mau diingatkan RemindCare untuk minum obat? (ya/tidak) 🔔",
     type: "yesno",
   },
   {
     field: "reminder_time",
-    text: "RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00) â°",
+    text: "RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00) ⏰",
     type: "time",
   },
 ];
@@ -225,16 +227,16 @@ const POSTPARTUM_VISIT_BY_CODE = new Map(
 );
 
 const REMINDER_TEMPLATES = [
-  "Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. ðŸ’ŠðŸ’ª",
-  "Semangat ya, Bunda. Konsisten minum tablet FE bikin tubuh lebih bertenaga. âœ¨ðŸ’Š",
-  "Kamu hebat sudah perhatian sama si kecil. Jangan lupa tablet FE ya. ðŸ¤°ðŸ’—",
-  "Sedikit konsisten tiap hari = hasil besar. Tetap minum tablet FE ya. ðŸŒŸðŸ’Š",
-  "Jaga diri dengan baik, ya. Tablet FE bantu penuhi kebutuhan zat besi. ðŸ©ºðŸ’Š",
-  "Semoga harimu lancar. Tablet FE membantu menjaga kesehatan ibu dan bayi. ðŸŒ¿ðŸ¤",
-  "Bunda luar biasa! Tablet FE membantu mencegah anemia. ðŸ’–ðŸ’Š",
-  "Satu tablet FE sehari bantu tubuh tetap fit. ðŸ˜ŠðŸ’Š",
-  "Zat besi penting untuk energi harianmu. Jangan lupa tablet FE. ðŸ”‹ðŸ’Š",
-  "RemindCare selalu dukung kamu. Tetap semangat hari ini. ðŸ¤—ðŸ’Š",
+  "Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat. 💊💪",
+  "Semangat ya, Bunda. Konsisten minum tablet FE bikin tubuh lebih bertenaga. ✨💊",
+  "Kamu hebat sudah perhatian sama si kecil. Jangan lupa tablet FE ya. 🤰💗",
+  "Sedikit konsisten tiap hari = hasil besar. Tetap minum tablet FE ya. 🌟💊",
+  "Jaga diri dengan baik, ya. Tablet FE bantu penuhi kebutuhan zat besi. 🩺💊",
+  "Semoga harimu lancar. Tablet FE membantu menjaga kesehatan ibu dan bayi. 🌿🤍",
+  "Bunda luar biasa! Tablet FE membantu mencegah anemia. 💖💊",
+  "Satu tablet FE sehari bantu tubuh tetap fit. 😊💊",
+  "Zat besi penting untuk energi harianmu. Jangan lupa tablet FE. 🔋💊",
+  "RemindCare selalu dukung kamu. Tetap semangat hari ini. 🤗💊",
 ];
 
 function findBrowserExecutable() {
@@ -424,7 +426,7 @@ function buildReminderMessage(user, now) {
   const greeting = getTimeGreeting(now);
   const name = getDisplayName(user);
   const template = pickReminderTemplate(user, toDateKey(now));
-  return `${greeting}, ${name}!\n${template}\nBaca artikel bermanfaat di remindcares.web.app ðŸ“šðŸŒ`;
+  return `${greeting}, ${name}!\n${template}\nBaca artikel bermanfaat di remindcares.web.app 📚🌐`;
 }
 
 function buildReminderQuestion() {
@@ -477,7 +479,11 @@ function formatDateId(value) {
 }
 
 function buildLaborPhaseMessage(user, now) {
-  if (user && user.delivery_hpl_response) {
+  if (
+    user &&
+    (user.delivery_hpl_response === "Sudah" ||
+      user.delivery_hpl3_response === "Sudah")
+  ) {
     return null;
   }
   const week = getGestationalWeek(user, now);
@@ -497,37 +503,29 @@ function buildLaborPhaseMessage(user, now) {
 }
 
 function getDeliveryValidationStageDue(user, now) {
-  const hpl = getHplDate(user);
-  if (!hpl) {
+  const startWeek =
+    Number.isFinite(DELIVERY_VALIDATION_START_WEEK) &&
+    DELIVERY_VALIDATION_START_WEEK > 0
+      ? Math.floor(DELIVERY_VALIDATION_START_WEEK)
+      : 39;
+  const week = getGestationalWeek(user, now);
+  if (!week || week < startWeek) {
     return null;
   }
+  if (hasConfirmedDelivery(user)) {
+    return null;
+  }
+
   const today = toDateKey(now.startOf("day"));
-  const hplDate = toDateKey(hpl);
-  const hplPlus3Date = toDateKey(hpl.plus({ days: HPL_FOLLOW_UP_DAYS }));
-
-  if (
-    today === hplDate &&
-    !user.delivery_hpl_response &&
-    user.delivery_hpl_poll_sent_date !== today
-  ) {
-    return "hpl";
-  }
-
-  if (
-    today === hplPlus3Date &&
-    user.delivery_hpl_response === "Belum" &&
-    !user.delivery_hpl3_response &&
-    user.delivery_hpl3_poll_sent_date !== today
-  ) {
-    return "hpl3";
-  }
-
-  return null;
+  return user.delivery_hpl_poll_sent_date === today ? null : "week39_daily";
 }
 
 function getPendingDeliveryPollStage(user) {
   if (!user || !user.delivery_poll_stage) {
     return null;
+  }
+  if (user.delivery_poll_stage === "week39_daily") {
+    return hasConfirmedDelivery(user) ? null : "week39_daily";
   }
   if (user.delivery_poll_stage === "hpl" && !user.delivery_hpl_response) {
     return "hpl";
@@ -541,6 +539,11 @@ function getPendingDeliveryPollStage(user) {
 function buildDeliveryValidationMessage(user, now, stage) {
   const greeting = getTimeGreeting(now);
   const name = getDisplayName(user);
+  if (stage === "week39_daily") {
+    const week = getGestationalWeek(user, now);
+    const weekLabel = week ? `minggu ke-${week}` : "masa akhir kehamilan";
+    return `${greeting}, ${name}.\nMemasuki ${weekLabel}, kami ingin memastikan apakah Ibu sudah melahirkan ya.`;
+  }
   const hpl = getHplDate(user);
   const hplText = hpl ? formatDateId(hpl) : "-";
   if (stage === "hpl3") {
@@ -647,6 +650,26 @@ function validateDeliveryDateTime(
     };
   }
   return { valid: true, message: "" };
+}
+
+function hasConfirmedDelivery(user) {
+  if (!user) {
+    return false;
+  }
+  const hplResponse = String(user.delivery_hpl_response || "")
+    .trim()
+    .toLowerCase();
+  const hpl3Response = String(user.delivery_hpl3_response || "")
+    .trim()
+    .toLowerCase();
+  if (hplResponse === "sudah" || hpl3Response === "sudah") {
+    return true;
+  }
+  if (user.delivery_data_completed_at) {
+    return true;
+  }
+  const deliveryStep = Number(user.delivery_data_step || 0);
+  return Number.isFinite(deliveryStep) && deliveryStep > 0;
 }
 
 function isPostpartumMonitoringActive(user) {
@@ -2483,7 +2506,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Perintah admin hanya untuk admin ya. ðŸ”’",
+      "Perintah admin hanya untuk admin ya. 🔒",
     );
     return true;
   }
@@ -2493,7 +2516,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Perintah admin: admin stats, admin allow <wa_id>, admin block <wa_id>, admin unblock <wa_id>, admin purge logs <hari>. ðŸ› ï¸",
+      "Perintah admin: admin stats, admin allow <wa_id>, admin block <wa_id>, admin unblock <wa_id>, admin purge logs <hari>. 🛠️",
     );
     return true;
   }
@@ -2503,7 +2526,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Stat user: total ${stats.total}, aktif ${stats.active}, allowed ${stats.allowed}, blocked ${stats.blocked}. ðŸ“Š`,
+      `Stat user: total ${stats.total}, aktif ${stats.active}, allowed ${stats.allowed}, blocked ${stats.blocked}. 📊`,
     );
     return true;
   }
@@ -2514,7 +2537,7 @@ async function handleAdminCommand(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format: admin allow|block|unblock <wa_id>. âœï¸",
+        "Format: admin allow|block|unblock <wa_id>. ✍️",
       );
       return true;
     }
@@ -2531,7 +2554,7 @@ async function handleAdminCommand(db, client, user, text) {
     }
 
     await updateUser(db, targetUser.wa_id, updates);
-    await sendText(client, user.wa_id, `OK ${action} ${targetUser.wa_id}. âœ…`);
+    await sendText(client, user.wa_id, `OK ${action} ${targetUser.wa_id}. ✅`);
     return true;
   }
 
@@ -2548,7 +2571,7 @@ async function handleAdminCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Log dibersihkan: ${removed} baris (retensi ${Number.isFinite(days) ? days : "-"} hari). ðŸ§¹`,
+      `Log dibersihkan: ${removed} baris (retensi ${Number.isFinite(days) ? days : "-"} hari). 🧹`,
     );
     return true;
   }
@@ -2556,7 +2579,7 @@ async function handleAdminCommand(db, client, user, text) {
   await sendText(
     client,
     user.wa_id,
-    "Perintah admin tidak dikenali. Ketik: admin help. ðŸ¤”",
+    "Perintah admin tidak dikenali. Ketik: admin help. 🤔",
   );
   return true;
 }
@@ -3073,19 +3096,18 @@ async function sendDeliveryValidationPoll(db, client, user, now, stage) {
     delivery_poll_last_attempt_at: now.toISO(),
     delivery_poll_fail_count: 0,
   };
-  if (stage === "hpl") {
-    updates.delivery_hpl_poll_sent_date = today;
-  } else if (stage === "hpl3") {
+  if (stage === "hpl3") {
     updates.delivery_hpl3_poll_sent_date = today;
+  } else {
+    updates.delivery_hpl_poll_sent_date = today;
   }
   await updateUser(db, user.wa_id, updates);
   return true;
 }
 
-function buildBelumDeliverySupportMessage(stage) {
+function buildBelumDeliverySupportMessage() {
   const lines = [
     "Terima kasih sudah memberi kabar, Ibu. Tetap semangat ya.",
-    "Keterlambatan dari HPL masih bisa normal pada sebagian ibu hamil.",
     "Tetap tenang dan pantau tanda persalinan seperti kontraksi teratur, keluar lendir bercampur darah, atau ketuban pecah.",
     "",
     "Yang sebaiknya dilakukan:",
@@ -3095,11 +3117,6 @@ function buildBelumDeliverySupportMessage(stage) {
     "",
     `Baca artikel lanjutan di: ${DELIVERY_ARTICLE_URL}`,
   ];
-  if (stage === "hpl") {
-    lines.push(
-      "Kami akan menanyakan lagi pada H+3 dari HPL untuk memastikan kondisi Ibu.",
-    );
-  }
   return lines.join("\n");
 }
 
@@ -3140,10 +3157,13 @@ async function handleDeliveryValidationResponse(
   if (!stage) {
     return false;
   }
-  if (stage === "hpl" && user.delivery_hpl_response) {
+  if (
+    (stage === "week39_daily" || stage === "hpl") &&
+    user.delivery_hpl_response === "Sudah"
+  ) {
     return true;
   }
-  if (stage === "hpl3" && user.delivery_hpl3_response) {
+  if (stage === "hpl3" && user.delivery_hpl3_response === "Sudah") {
     return true;
   }
 
@@ -3154,17 +3174,17 @@ async function handleDeliveryValidationResponse(
     delivery_poll_last_attempt_at: null,
     delivery_poll_fail_count: 0,
   };
-  if (stage === "hpl") {
-    updates.delivery_hpl_response = response;
-    updates.delivery_hpl_response_at = nowIso;
-  } else {
+  if (stage === "hpl3") {
     updates.delivery_hpl3_response = response;
     updates.delivery_hpl3_response_at = nowIso;
+  } else {
+    updates.delivery_hpl_response = response;
+    updates.delivery_hpl_response_at = nowIso;
   }
   await updateUser(db, user.wa_id, updates);
 
   if (response === "Belum") {
-    await sendText(client, user.wa_id, buildBelumDeliverySupportMessage(stage));
+    await sendText(client, user.wa_id, buildBelumDeliverySupportMessage());
     return true;
   }
 
@@ -3341,7 +3361,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Aku belum menangkap jawabannya. Bisa diulang? ðŸ™‚",
+      "Aku belum menangkap jawabannya. Bisa diulang? 🙂",
     );
     return;
   }
@@ -3351,7 +3371,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
   if (question.type === "yesno") {
     const yesNo = parseYesNo(text);
     if (yesNo === null) {
-      await sendText(client, user.wa_id, "Jawab dengan ya atau tidak, ya. ðŸ™");
+      await sendText(client, user.wa_id, "Jawab dengan ya atau tidak, ya. 🙏");
       return;
     }
     updates[question.field] = yesNo ? 1 : 0;
@@ -3366,7 +3386,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start. ðŸ‘",
+        "Baik, RemindCare tidak akan mengingatkan dulu. Kalau berubah pikiran, ketik start. 👍",
       );
       return;
     }
@@ -3376,7 +3396,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format jam belum sesuai. Contoh: 17:00. â°",
+        "Format jam belum sesuai. Contoh: 17:00. ⏰",
       );
       return;
     }
@@ -3387,7 +3407,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format HPHT belum sesuai. Contoh: 31-01-2024. ðŸ“…",
+        "Format HPHT belum sesuai. Contoh: 31-01-2024. 📅",
       );
       return;
     }
@@ -3418,7 +3438,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap! RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB. â°âœ¨`,
+      `Siap! RemindCare akan mengingatkan setiap hari jam ${finalTime} WIB. ⏰✨`,
     );
     return;
   }
@@ -3482,7 +3502,7 @@ async function handleCommand(db, client, user, text) {
 
   if (/^(stop|berhenti)$/.test(normalized)) {
     await updateUser(db, user.wa_id, { allow_remindcare: 0, status: "paused" });
-    await sendText(client, user.wa_id, "Oke, pengingat dihentikan dulu. â¸ï¸");
+    await sendText(client, user.wa_id, "Oke, pengingat dihentikan dulu. ⏸️");
     return true;
   }
 
@@ -3501,7 +3521,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB. âœ…â°`,
+      `Siap, RemindCare aktif lagi jam ${user.reminder_time} WIB. ✅⏰`,
     );
     return true;
   }
@@ -3514,7 +3534,7 @@ async function handleCommand(db, client, user, text) {
       await sendText(
         client,
         user.wa_id,
-        "Format jam belum sesuai. Contoh: ubah jam 17:00. â°",
+        "Format jam belum sesuai. Contoh: ubah jam 17:00. ⏰",
       );
       return true;
     }
@@ -3526,7 +3546,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Jam pengingat diubah ke ${time} WIB. âœ…â°`,
+      `Jam pengingat diubah ke ${time} WIB. ✅⏰`,
     );
     return true;
   }
@@ -3554,13 +3574,13 @@ async function handleDailyResponse(db, client, user, response) {
     await sendText(
       client,
       user.wa_id,
-      "Terima kasih. Semoga sehat selalu. ðŸŒ¼",
+      "Terima kasih. Semoga sehat selalu. 🌼",
     );
   } else if (response === "Belum") {
     await sendText(
       client,
       user.wa_id,
-      "Baik, jangan lupa diminum ya. ðŸ’ŠðŸ™‚",
+      "Baik, jangan lupa diminum ya. 💊🙂",
     );
   }
 }
@@ -3581,7 +3601,7 @@ async function handleMessage(db, client, msg) {
       await sendText(
         client,
         waId,
-        "Terlalu banyak pesan. Coba lagi sebentar. â³",
+        "Terlalu banyak pesan. Coba lagi sebentar. ⏳",
       );
     }
     return;
@@ -3601,7 +3621,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Nomor ini belum diizinkan. Hubungi admin. ðŸš«",
+      "Nomor ini belum diizinkan. Hubungi admin. 🚫",
     );
     return;
   }
@@ -3609,7 +3629,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Halo! ðŸ‘‹ Aku RemindCare, bot pengingat tablet FE untuk ibu hamil supaya minum obat tepat waktu. ðŸ¤°ðŸ’Š\n\nUntuk mulai, ketik start ya. âœ¨\n\nCara pakai: jawab pertanyaan, pilih jam pengingat, lalu terima reminder harian. â°\nBaca artikel seputar kehamilan di remindcares.web.app ðŸ“šðŸŒ",
+      "Halo! 👋 Aku RemindCare, bot pengingat tablet FE untuk ibu hamil supaya minum obat tepat waktu. 🤰💊\n\nUntuk mulai, ketik start ya. ✨\n\nCara pakai: jawab pertanyaan, pilih jam pengingat, lalu terima reminder harian. ⏰\nBaca artikel seputar kehamilan di remindcares.web.app 📚🌐",
     );
     return;
   }
@@ -3624,7 +3644,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Nomor ini belum diizinkan. Hubungi admin. ðŸš«",
+      "Nomor ini belum diizinkan. Hubungi admin. 🚫",
     );
     return;
   }
@@ -3693,7 +3713,7 @@ async function handleMessage(db, client, msg) {
     await sendText(
       client,
       waId,
-      "Belum ada polling hari ini. Tunggu pengingat berikutnya ya. ⏳",
+      "Belum ada polling hari ini. Tunggu pengingat berikutnya ya. ?",
     );
     return;
   }
@@ -3701,7 +3721,7 @@ async function handleMessage(db, client, msg) {
   await sendText(
     client,
     waId,
-    "Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah. ðŸ’¬ðŸ“‹",
+    "Aku siap membantu pengingat tablet FE. Ketik menu untuk melihat perintah. 💬📋",
   );
 }
 
@@ -3722,7 +3742,7 @@ async function handleVoteUpdate(db, client, vote) {
       await sendText(
         client,
         waId,
-        "Terlalu banyak pesan. Coba lagi sebentar. Ã¢ÂÂ³",
+        "Terlalu banyak pesan. Coba lagi sebentar. ⏳",
       );
     }
     return;
@@ -3805,6 +3825,10 @@ async function processUserReminderTick(db, client, user, now, today) {
   }
 
   const postpartumActive = isPostpartumMonitoringActive(user);
+  const deliveryConfirmed = hasConfirmedDelivery(user);
+  const collectingDeliveryData =
+    Number.isFinite(Number(user.delivery_data_step)) &&
+    Number(user.delivery_data_step) > 0;
   if (postpartumActive) {
     await processPostpartumVisitReminders(db, client, user, now);
   }
@@ -3813,7 +3837,12 @@ async function processUserReminderTick(db, client, user, now, today) {
     return;
   }
 
-  if (!isPregnancyActive(user, now) && !postpartumActive) {
+  if (
+    !isPregnancyActive(user, now) &&
+    !postpartumActive &&
+    deliveryConfirmed &&
+    !collectingDeliveryData
+  ) {
     await updateUser(db, user.wa_id, {
       status: "completed",
       allow_remindcare: 0,
@@ -4307,7 +4336,7 @@ async function main() {
   const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-      headless: false,
+      headless: true,
       ...(executablePath ? { executablePath } : {}),
       ...(puppeteerArgs.length ? { args: puppeteerArgs } : {}),
     },
