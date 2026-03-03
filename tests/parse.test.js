@@ -123,17 +123,19 @@ test('getPostpartumDueAt calculates due time based on visit start hour', () => {
 
 test('buildPostpartumSnapshot summarizes visit status', () => {
   const snapshot = buildPostpartumSnapshot([
-    { visit_code: 'KF1', sent_at: '2026-01-10T20:30:00', response: 'Sudah', response_at: '2026-01-10T21:00:00' },
-    { visit_code: 'KN1', sent_at: '2026-01-10T20:31:00', response: 'Belum', response_at: '2026-01-10T21:05:00' },
-    { visit_code: 'KF2', sent_at: '2026-01-13T14:30:00', response: null, response_at: null }
+    { visit_code: 'KFKN1', sent_at: '2026-01-10T20:30:00', response: 'Sudah', response_at: '2026-01-10T21:00:00' },
+    { visit_code: 'KFKN2', sent_at: '2026-01-10T20:31:00', response: 'Belum', response_at: '2026-01-10T21:05:00' },
+    { visit_code: 'KFKN3', sent_at: '2026-01-13T14:30:00', response: null, response_at: null }
   ]);
   assert.strictEqual(snapshot.postpartum_total, 3);
   assert.strictEqual(snapshot.postpartum_sent, 3);
   assert.strictEqual(snapshot.postpartum_sudah, 1);
   assert.strictEqual(snapshot.postpartum_belum, 1);
   assert.strictEqual(snapshot.postpartum_pending, 1);
-  assert.strictEqual(snapshot.kf1_response, 'Sudah');
-  assert.strictEqual(snapshot.kn1_response, 'Belum');
+  assert.strictEqual(snapshot.kfkn1_confirmed_at, '2026-01-10T21:00:00');
+  assert.strictEqual(snapshot.kfkn2_confirmed_at, null);
+  assert.strictEqual(snapshot.kfkn3_confirmed_at, null);
+  assert.strictEqual(snapshot.postpartum_last_confirmed_at, '2026-01-10T21:00:00');
 });
 
 test('retry backoff delay increases and caps', () => {

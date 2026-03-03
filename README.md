@@ -17,3 +17,7 @@ Durasi pengingat default sampai 42 minggu (bisa diubah lewat env `PREGNANCY_WEEK
 - start
 - stop
 - ubah jam 17:00
+- info
+- edit data
+- edit persalinan
+- batal
