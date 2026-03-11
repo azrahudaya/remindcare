@@ -347,6 +347,17 @@ function isEditDeliveryCommand(text) {
   return /^(edit|ubah|reset)\s+(data\s+)?persalinan$/.test(normalized);
 }
 
+function isDeliveryCheckCommand(text) {
+  if (!text) {
+    return false;
+  }
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized === "persalinan" ||
+    /^(cek|konfirmasi|status)\s+persalinan$/.test(normalized)
+  );
+}
+
 function isEditMenuCommand(text) {
   if (!text) {
     return false;
@@ -372,6 +383,7 @@ function isAlwaysCommand(text) {
     /^(help|menu|info|informasi|about|abotu|website|delete|hapus|batal|cancel)$/.test(
       normalized,
     ) ||
+    isDeliveryCheckCommand(normalized) ||
     isEditDataCommand(normalized) ||
     isEditDeliveryCommand(normalized) ||
     isEditMenuCommand(normalized)
@@ -864,6 +876,9 @@ function getPendingDeliveryPollStage(user) {
   if (!user || !user.delivery_poll_stage) {
     return null;
   }
+  if (user.delivery_poll_stage === "manual") {
+    return hasConfirmedDelivery(user) ? null : "manual";
+  }
   if (user.delivery_poll_stage === "week39_daily") {
     return hasConfirmedDelivery(user) ? null : "week39_daily";
   }
@@ -879,6 +894,9 @@ function getPendingDeliveryPollStage(user) {
 function buildDeliveryValidationMessage(user, now, stage) {
   const greeting = getTimeGreeting(now);
   const name = getDisplayName(user);
+  if (stage === "manual") {
+    return `${greeting}, ${name}.\nKami ingin memastikan apakah Ibu sudah melahirkan ya.`;
+  }
   if (stage === "week39_daily") {
     const week = getGestationalWeek(user, now);
     const weekLabel = week ? `minggu ke-${week}` : "masa akhir kehamilan";
@@ -3883,7 +3901,7 @@ async function handleDeliveryValidationResponse(
   if (stage === "hpl3") {
     updates.delivery_hpl3_response = response;
     updates.delivery_hpl3_response_at = nowIso;
-  } else {
+  } else if (stage !== "manual") {
     updates.delivery_hpl_response = response;
     updates.delivery_hpl_response_at = nowIso;
   }
@@ -4178,6 +4196,7 @@ async function handleCommand(db, client, user, text) {
   const isDeleteCmd = /^(delete|hapus)$/.test(normalized);
   const isEditDataCmd = isEditDataCommand(normalized);
   const isEditDeliveryCmd = isEditDeliveryCommand(normalized);
+  const isDeliveryCheckCmd = isDeliveryCheckCommand(normalized);
   const isEditMenuCmd = isEditMenuCommand(normalized);
 
   if (!isCancelCmd && !isDeleteCmd && !isEditDataCmd && !isEditDeliveryCmd) {
@@ -4200,7 +4219,7 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      `Menu:\n*start* - aktifkan pengingat\n*stop* - hentikan pengingat\n*ubah jam 17:00* - ganti jam pengingat\n*info* - ringkasan data penting ibu\n*edit data* - isi ulang semua jawaban dari awal\n*edit persalinan* - isi ulang data persalinan\n*batal* - batalkan konfirmasi edit/hapus\n*about* - info singkat\n*website* - alamat website\n*delete* - hapus akun`,
+      `Menu:\n*start* - aktifkan pengingat\n*stop* - hentikan pengingat\n*ubah jam 17:00* - ganti jam pengingat\n*info* - ringkasan data penting ibu\n*cek persalinan* - tanya apakah Ibu sudah melahirkan\n*edit data* - isi ulang semua jawaban dari awal\n*edit persalinan* - isi ulang data persalinan\n*batal* - batalkan konfirmasi edit/hapus\n*about* - info singkat\n*website* - alamat website\n*delete* - hapus akun`,
     );
     return true;
   }
@@ -4216,8 +4235,66 @@ async function handleCommand(db, client, user, text) {
     await sendText(
       client,
       user.wa_id,
-      "Perintah edit:\n*edit data* untuk isi ulang semua data dari awal.\n*edit persalinan* untuk isi ulang data persalinan.",
+      "Perintah edit:\n*edit data* untuk isi ulang semua data dari awal.\n*edit persalinan* untuk isi ulang data persalinan.\n\nPerintah persalinan:\n*cek persalinan* untuk konfirmasi apakah Ibu sudah melahirkan.",
     );
+    return true;
+  }
+
+  if (isDeliveryCheckCmd) {
+    if (!user.hpht_iso) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Data kehamilan belum lengkap. Lengkapi dulu ya, lalu nanti cek lagi status persalinannya.",
+      );
+      return true;
+    }
+
+    const deliveryStep = Number(user.delivery_data_step || 0);
+    if (Number.isFinite(deliveryStep) && deliveryStep > 0) {
+      const currentQuestion = DELIVERY_QUESTIONS[deliveryStep - 1];
+      await sendText(
+        client,
+        user.wa_id,
+        currentQuestion
+          ? `Data persalinan sedang diisi. Lanjutkan dari pertanyaan ini ya:\n${currentQuestion.text}`
+          : "Data persalinan sedang diisi. Lanjutkan jawaban berikutnya ya.",
+      );
+      return true;
+    }
+
+    if (isPostpartumMonitoringActive(user)) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Data persalinan sudah tercatat. Jika ada perubahan, ketik *edit persalinan* untuk isi ulang dari awal.",
+      );
+      return true;
+    }
+
+    if (hasAnyDeliveryRecord(user)) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Data persalinan sudah pernah tercatat sebagian. Jika mau isi ulang, ketik *edit persalinan*.",
+      );
+      return true;
+    }
+
+    const sent = await sendDeliveryValidationPoll(
+      db,
+      client,
+      user,
+      nowWib(),
+      "manual",
+    );
+    if (!sent) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Pertanyaan persalinan belum berhasil dikirim. Coba lagi sebentar ya.",
+      );
+    }
     return true;
   }
 
@@ -5203,4 +5280,5 @@ module.exports = {
   canAttemptByBackoff,
   validateDeliveryDateIso,
   validateDeliveryDateTime,
+  isDeliveryCheckCommand,
 };

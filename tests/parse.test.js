@@ -17,7 +17,8 @@ const {
   getRetryDelayMs,
   canAttemptByBackoff,
   validateDeliveryDateIso,
-  validateDeliveryDateTime
+  validateDeliveryDateTime,
+  isDeliveryCheckCommand
 } = require('../index');
 
 function test(name, fn) {
@@ -103,6 +104,13 @@ test('parseDeliveryValidationAnswer only handles melahirkan intent', () => {
   assert.strictEqual(parseDeliveryValidationAnswer('Sudah melahirkan'), 'Sudah');
   assert.strictEqual(parseDeliveryValidationAnswer('Belum melahirkan'), 'Belum');
   assert.strictEqual(parseDeliveryValidationAnswer('sudah'), null);
+});
+
+test('isDeliveryCheckCommand recognizes manual delivery command', () => {
+  assert.strictEqual(isDeliveryCheckCommand('cek persalinan'), true);
+  assert.strictEqual(isDeliveryCheckCommand('konfirmasi persalinan'), true);
+  assert.strictEqual(isDeliveryCheckCommand('persalinan'), true);
+  assert.strictEqual(isDeliveryCheckCommand('sudah melahirkan'), false);
 });
 
 test('getDeliveryDateTime returns valid datetime from delivery date+time', () => {
