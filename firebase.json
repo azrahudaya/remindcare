@@ -1,0 +1,23 @@
+{
+  "hosting": {
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "redirects": [
+      {
+        "source": "/minggu1",
+        "destination": "https://drive.google.com/drive/folders/17AIFis9EAt-cOJ87e6MqEHe5FsI5qx7w?usp=sharing",
+        "type": 302
+      },
+      {
+        "source": "/minggu2",
+        "destination": "https://drive.google.com/drive/folders/1u8JOVNREvys7QQXcsRlLcz_efs7tx54w?usp=sharing",
+        "type": 302
+      },
+      {
+        "source": "/minggu3",
+        "destination": "https://drive.google.com/drive/folders/1yNNdbUzAh-3IdCRF61yU-FjnJf9YAdRS?usp=sharing",
+        "type": 302
+      }
+    ]
+  }
+}

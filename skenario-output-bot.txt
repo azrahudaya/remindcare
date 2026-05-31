@@ -1,0 +1,472 @@
+SKENARIO OUTPUT BOT REMINDCARE
+
+Catatan:
+- Ini contoh output percakapan, bukan log real user.
+- Jam dan tanggal hanya contoh.
+- Link materi kelas ibu memakai host https://remindcares.web.app.
+
+============================================================
+SKENARIO 1 - USER BARU MULAI ONBOARDING
+============================================================
+
+User:
+start
+
+Bot:
+Halo, aku RemindCare. Boleh tau nama ibu?
+
+User:
+Siti
+
+Bot:
+Usia berapa?
+
+User:
+27
+
+Bot:
+Kehamilan ke berapa?
+
+User:
+1
+
+Bot:
+HPHT (Hari Pertama Haid Terakhir) kapan? Format tanggal-bulan-tahun, contoh: 31-01-2024
+
+User:
+10-01-2026
+
+Bot:
+Apakah rutin mengkonsumsi obat? (ya/tidak)
+
+User:
+ya
+
+Bot:
+Masih mengkonsumsi teh? (ya/tidak)
+
+User:
+tidak
+
+Bot:
+Siapa yang biasanya ngingetin buat minum obat?
+
+User:
+suami
+
+Bot:
+Mau diingatkan RemindCare untuk minum obat? (ya/tidak)
+
+User:
+ya
+
+Bot:
+RemindCare bakal mengingatkan tiap hari lewat WhatsApp. Mau diingatkan setiap jam berapa? (format 24 jam, contoh 17:00)
+
+User:
+19:00
+
+Bot:
+Siap! RemindCare akan mengingatkan setiap hari jam 19:00 WIB.
+
+
+============================================================
+SKENARIO 2 - REMINDER TABLET FE HARIAN
+============================================================
+
+Kondisi:
+- User active.
+- reminder_time = 19:00.
+- Hari ini poll belum dikirim.
+
+Bot:
+Selamat malam, Siti.
+Terima kasih sudah menjaga kesehatan hari ini. Tablet FE bantu tubuh tetap kuat.
+
+Bot Poll:
+Sudah minum tablet FE hari ini?
+- Sudah
+- Belum
+
+Jika user pilih Sudah:
+
+User:
+Sudah
+
+Bot:
+Terima kasih. Semoga sehat selalu.
+
+Jika user pilih Belum:
+
+User:
+Belum
+
+Bot:
+Baik, jangan lupa diminum ya.
+
+
+============================================================
+SKENARIO 3 - KELAS IBU MINGGU 1, USER BELUM PERNAH IKUT
+============================================================
+
+Kondisi:
+- User sudah selesai onboarding.
+- Hari Minggu.
+- Jam sekarang berada di range 09:00 sampai sebelum 12:00 WIB.
+- mother_class_next_week = 1.
+
+Bot:
+Halo Siti, selamat pagi. Apa kabar hari ini?
+
+RemindCare ingin mengenalkan kelas ibu hamil. Apakah Ibu sudah pernah mengikuti kelas ibu?
+
+Balas *Sudah* atau *Belum*.
+
+User:
+Belum
+
+Bot:
+Ibu berada di wilayah cakupan mana? Contoh: Puskesmas, Kelurahan, RT/RW, atau Posyandu mana.
+
+User:
+Puskesmas Cibeureum
+
+Bot:
+Baik, wilayah cakupan Ibu sudah dicatat.
+
+Ibu dapat mengakses materi kelas ibu pertemuan pertama di link berikut:
+https://remindcares.web.app/minggu1
+
+Selamat menyimak.
+
+
+============================================================
+SKENARIO 4 - KELAS IBU MINGGU 1, USER SUDAH IKUT 1-3 KALI
+============================================================
+
+Kondisi:
+- User sudah selesai onboarding.
+- Hari Minggu.
+- Jam sekarang berada di range 09:00 sampai sebelum 12:00 WIB.
+- mother_class_next_week = 1.
+
+Bot:
+Halo Siti, selamat pagi. Apa kabar hari ini?
+
+RemindCare ingin mengenalkan kelas ibu hamil. Apakah Ibu sudah pernah mengikuti kelas ibu?
+
+Balas *Sudah* atau *Belum*.
+
+User:
+Sudah
+
+Bot:
+Kelas ibu pernah diikuti di mana? Contoh: Puskesmas, Kelurahan, RT/RW, Posyandu, atau tempat lainnya.
+
+User:
+Posyandu Melati
+
+Bot:
+Sudah berapa kali Ibu mengikuti kelas ibu? Balas angka *1* sampai *4*.
+
+User:
+2
+
+Bot:
+Baik, Ibu sudah mengikuti kelas ibu 2 kali. RemindCare akan lanjut mengingatkan setiap hari Minggu pagi sampai program 4 minggu selesai.
+
+Ibu dapat mengakses materi kelas ibu pertemuan pertama di link berikut:
+https://remindcares.web.app/minggu1
+
+Selamat menyimak.
+
+
+============================================================
+SKENARIO 5 - KELAS IBU MINGGU 1, USER SUDAH IKUT 4 KALI
+============================================================
+
+Bot:
+Halo Siti, selamat pagi. Apa kabar hari ini?
+
+RemindCare ingin mengenalkan kelas ibu hamil. Apakah Ibu sudah pernah mengikuti kelas ibu?
+
+Balas *Sudah* atau *Belum*.
+
+User:
+Sudah
+
+Bot:
+Kelas ibu pernah diikuti di mana? Contoh: Puskesmas, Kelurahan, RT/RW, Posyandu, atau tempat lainnya.
+
+User:
+Puskesmas Cibeureum
+
+Bot:
+Sudah berapa kali Ibu mengikuti kelas ibu? Balas angka *1* sampai *4*.
+
+User:
+4
+
+Bot:
+Selamat, Ibu sudah menyelesaikan 4 kali kelas ibu. Program pengingat kelas ibu dinyatakan selesai.
+
+
+============================================================
+SKENARIO 6 - KELAS IBU MINGGU 2
+============================================================
+
+Kondisi:
+- Hari Minggu berikutnya.
+- Jam sekarang berada di range 09:00 sampai sebelum 12:00 WIB.
+- mother_class_next_week = 2.
+
+Bot:
+Halo Siti, selamat pagi. Bagaimana kabarnya hari ini?
+
+Saat ini Ibu memasuki jadwal kelas ibu pertemuan kedua. Bagaimana pengalaman Ibu terkait kelas ibu di minggu yang lalu? Apakah ada yang ingin ditanyakan?
+
+Untuk pertemuan kedua ini Ibu dapat mengakses materi dari link berikut:
+https://remindcares.web.app/minggu2
+
+Selamat menyimak.
+
+
+============================================================
+SKENARIO 7 - KELAS IBU MINGGU 3
+============================================================
+
+Kondisi:
+- Hari Minggu berikutnya.
+- Jam sekarang berada di range 09:00 sampai sebelum 12:00 WIB.
+- mother_class_next_week = 3.
+
+Bot:
+Halo Siti, selamat pagi. Bagaimana kabarnya hari ini?
+
+Saat ini Ibu memasuki jadwal kelas ibu pertemuan ketiga. Bagaimana pengalaman Ibu terkait kelas ibu di minggu yang lalu? Apakah ada yang ingin ditanyakan?
+
+Untuk pertemuan ketiga ini Ibu dapat mengakses materi dari link berikut:
+https://remindcares.web.app/minggu3
+
+Selamat menyimak.
+
+
+============================================================
+SKENARIO 8 - KELAS IBU MINGGU 4
+============================================================
+
+Kondisi:
+- Hari Minggu berikutnya.
+- Jam sekarang berada di range 09:00 sampai sebelum 12:00 WIB.
+- mother_class_next_week = 4.
+
+Bot:
+Halo Siti, selamat pagi. Saat ini Ibu memasuki jadwal kelas ibu minggu keempat.
+
+Untuk melengkapi kelas ibu, Ibu dianjurkan datang langsung ke fasilitas kesehatan sekitar yang membuka kelas ibu, seperti posyandu, puskesmas, klinik, atau fasilitas kesehatan lainnya.
+
+Silakan hubungi kader, bidan, atau puskesmas setempat untuk jadwal kelas ibu terdekat.
+
+Kondisi setelah terkirim:
+- mother_class_next_week = 5.
+- mother_class_status = completed.
+- Reminder kelas ibu tidak dikirim lagi.
+
+
+============================================================
+SKENARIO 9 - VALIDASI PERSALINAN
+============================================================
+
+Kondisi:
+- Usia kehamilan sudah masuk minggu validasi persalinan.
+- Waktu sekarang masuk window 2 jam sebelum reminder_time.
+
+Bot Poll:
+Apakah Ibu sudah melahirkan?
+- Sudah melahirkan
+- Belum melahirkan
+
+Jika user pilih Belum:
+
+User:
+Belum melahirkan
+
+Bot:
+Terima kasih sudah memberi kabar, Ibu. Tetap semangat ya.
+Tetap tenang dan pantau tanda persalinan seperti kontraksi teratur, keluar lendir bercampur darah, atau ketuban pecah.
+
+Yang sebaiknya dilakukan:
+1. Istirahat cukup dan jaga asupan cairan.
+2. Pantau gerakan janin secara berkala.
+3. Segera ke fasilitas kesehatan bila ada tanda bahaya.
+
+Baca artikel lanjutan di: https://remindcares.web.app
+
+Jika user pilih Sudah:
+
+User:
+Sudah melahirkan
+
+Bot:
+Terima kasih, Ibu. Selamat atas kelahirannya. Kami lanjutkan pendataan persalinan singkat ya.
+
+Bot:
+Terima kasih infonya, Ibu. Tanggal melahirkan kapan? (contoh: 31-01-2026)
+
+
+============================================================
+SKENARIO 10 - PENDATAAN PERSALINAN
+============================================================
+
+Bot:
+Terima kasih infonya, Ibu. Tanggal melahirkan kapan? (contoh: 31-01-2026)
+
+User:
+20-04-2026
+
+Bot:
+Jam melahirkan pukul berapa? (format 24 jam, contoh: 14:30)
+
+User:
+10:30
+
+Bot:
+Tempat melahirkan di mana? (rumah/puskesmas/klinik/rumah sakit)
+
+User:
+puskesmas
+
+Bot:
+Siapa penolong persalinannya? (contoh: bidan/dokter)
+
+User:
+bidan
+
+Bot:
+Apakah persalinan dengan penyulit? (ya/tidak)
+
+User:
+tidak
+
+Bot:
+Jenis kelamin bayi apa? (laki-laki/perempuan)
+
+User:
+perempuan
+
+Bot:
+Berat badan bayi saat lahir berapa gram? (contoh: 3200 gram)
+
+User:
+3100 gram
+
+Bot:
+Apakah ada keluhan Ibu saat ini? (jika tidak ada, tulis: tidak ada)
+
+User:
+tidak ada
+
+Bot:
+Terima kasih, data persalinan sudah dicatat. Jika ada perubahan, ketik *menu* untuk lihat perintah yang tersedia lalu kabari kami ya.
+
+Bot:
+Selamat atas kelahiran buah hati, Siti.
+RemindCare akan terus menemani Ibu sampai masa krusial ini selesai.
+Masa nifas dan masa neonatal adalah masa yang sangat penting bagi ibu dan bayi. Pada periode ini, risiko gangguan kesehatan masih tinggi sehingga pemantauan rutin sangat diperlukan untuk memastikan ibu dan bayi dalam kondisi sehat.
+RemindCare akan mengingatkan jadwal kunjungan KF dan KN sesuai waktu yang dianjurkan.
+Baca artikel lanjutan di: https://remindcares.web.app
+
+
+============================================================
+SKENARIO 11 - REMINDER KUNJUNGAN KF/KN
+============================================================
+
+Kondisi:
+- Data persalinan sudah lengkap.
+- Due time kunjungan sudah tercapai.
+- Waktu sekarang masuk window 2 jam sebelum reminder_time.
+
+Bot:
+Selamat pagi, Siti.
+Pengingat kunjungan KF/KN 1 (KF + KN).
+Rentang waktu: 6 jam - 2 hari (48 jam) pasca persalinan.
+Fokus kunjungan:
+- Ibu: cegah perdarahan, deteksi infeksi, cek rahim & tekanan darah.
+- Bayi: cek napas, suhu/kehangatan, tali pusat, dan menyusu dini.
+Yuk periksa ke tenaga kesehatan/fasilitas kesehatan ya.
+Baca artikel lanjutan di: https://remindcares.web.app
+
+Bot Poll:
+Apakah Ibu sudah melakukan kunjungan KF/KN 1?
+- Sudah
+- Belum
+
+Jika user pilih Sudah:
+
+User:
+Sudah
+
+Bot:
+Terima kasih, jawaban KF/KN 1 sudah dicatat. Tetap lanjutkan kunjungan berikutnya sesuai jadwal ya.
+
+Jika user pilih Belum:
+
+User:
+Belum
+
+Bot:
+Baik, jawaban KF/KN 1 sudah dicatat. Mohon segera lakukan kunjungan ke tenaga kesehatan/fasilitas kesehatan.
+Info lanjutan: https://remindcares.web.app
+
+
+============================================================
+SKENARIO 12 - KF 4 SUDAH, REMINDER FE BERHENTI
+============================================================
+
+Kondisi:
+- User menerima reminder KF 4.
+- User menjawab Sudah.
+
+Bot Poll:
+Apakah Ibu sudah melakukan kunjungan KF 4?
+- Sudah
+- Belum
+
+User:
+Sudah
+
+Bot:
+Terima kasih, jawaban KF 4 sudah dicatat.
+
+Bot:
+Selamat, kunjungan KF 4 sudah tercatat. Program RemindCare selesai, jadi pengingat tablet FE tidak akan dikirim lagi. Jika ada program atau kehamilan baru, ketik *edit data* untuk isi ulang dari awal.
+
+Kondisi setelah itu:
+- status user = completed.
+- allow_remindcare = 0.
+- Reminder tablet FE harian tidak dikirim lagi.
+- Reminder validasi persalinan dan postpartum juga tidak diproses lagi untuk user completed.
+
+
+============================================================
+SKENARIO 13 - LINK REDIRECT KELAS IBU
+============================================================
+
+User membuka:
+https://remindcares.web.app/minggu1
+
+Sistem:
+Redirect ke Google Drive materi kelas ibu pertemuan pertama.
+
+User membuka:
+https://remindcares.web.app/minggu2
+
+Sistem:
+Redirect ke Google Drive materi kelas ibu pertemuan kedua.
+
+User membuka:
+https://remindcares.web.app/minggu3
+
+Sistem:
+Redirect ke Google Drive materi kelas ibu pertemuan ketiga.
+

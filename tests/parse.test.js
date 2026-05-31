@@ -18,7 +18,9 @@ const {
   canAttemptByBackoff,
   validateDeliveryDateIso,
   validateDeliveryDateTime,
-  isDeliveryCheckCommand
+  isDeliveryCheckCommand,
+  isMotherClassSundayWindow,
+  parseMotherClassAttendanceCount
 } = require('../index');
 
 function test(name, fn) {
@@ -177,4 +179,24 @@ test('validateDeliveryDateTime rejects future time', () => {
   const valid = validateDeliveryDateTime(user, '2026-02-19', '09:30', now);
   assert.strictEqual(future.valid, false);
   assert.strictEqual(valid.valid, true);
+});
+
+test('mother class reminder window only opens on Sunday 09-12 WIB', () => {
+  const sundayMorning = DateTime.fromISO('2026-05-10T09:00:00', { zone: 'Asia/Jakarta' });
+  const sundayBeforeWindow = DateTime.fromISO('2026-05-10T08:59:00', { zone: 'Asia/Jakarta' });
+  const sundayAfterWindow = DateTime.fromISO('2026-05-10T12:00:00', { zone: 'Asia/Jakarta' });
+  const mondayMorning = DateTime.fromISO('2026-05-11T09:30:00', { zone: 'Asia/Jakarta' });
+  assert.strictEqual(isMotherClassSundayWindow(sundayMorning), true);
+  assert.strictEqual(isMotherClassSundayWindow(sundayBeforeWindow), false);
+  assert.strictEqual(isMotherClassSundayWindow(sundayAfterWindow), false);
+  assert.strictEqual(isMotherClassSundayWindow(mondayMorning), false);
+});
+
+test('parseMotherClassAttendanceCount accepts only 1-4', () => {
+  assert.strictEqual(parseMotherClassAttendanceCount('1'), 1);
+  assert.strictEqual(parseMotherClassAttendanceCount('4 kali'), 4);
+  assert.strictEqual(parseMotherClassAttendanceCount('4x'), 4);
+  assert.strictEqual(parseMotherClassAttendanceCount('14'), null);
+  assert.strictEqual(parseMotherClassAttendanceCount('5'), null);
+  assert.strictEqual(parseMotherClassAttendanceCount('belum'), null);
 });
