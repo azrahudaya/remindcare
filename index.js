@@ -1981,7 +1981,6 @@ function renderAdminDashboardPage() {
         <table>
           <thead>
             <tr>
-              <th>WA ID</th>
               <th>Nama</th>
               <th>Fase</th>
               <th>Status</th>
@@ -1992,7 +1991,7 @@ function renderAdminDashboardPage() {
             </tr>
           </thead>
           <tbody id="users-body">
-            <tr><td colspan="8" class="muted">Loading...</td></tr>
+            <tr><td colspan="7" class="muted">Loading...</td></tr>
           </tbody>
         </table>
         </div>
@@ -2005,7 +2004,7 @@ function renderAdminDashboardPage() {
           <thead>
             <tr>
               <th>Tanggal</th>
-              <th>WA ID</th>
+              <th>Nama</th>
               <th>Jawaban</th>
               <th>Sudah Count</th>
               <th>Belum Count</th>
@@ -2241,7 +2240,7 @@ function renderAdminDashboardPage() {
         });
         tbody.innerHTML = '';
         if (!filtered.length) {
-          tbody.innerHTML = '<tr><td colspan="8" class="muted">Tidak ada user pada filter ini.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" class="muted">Tidak ada user pada filter ini.</td></tr>';
           return;
         }
         for (const user of filtered) {
@@ -2252,7 +2251,6 @@ function renderAdminDashboardPage() {
             window.location.href = '/admin/users/' + encodeURIComponent(user.wa_id);
           });
           const cells = [
-            user.wa_id,
             user.name,
             phaseLabel(classifyPhase(user)),
             user.status,
@@ -2292,7 +2290,7 @@ function renderAdminDashboardPage() {
         const data = await fetchJson('/admin/api/users');
         usersCache = data.users || [];
         if (!usersCache.length) {
-          document.getElementById('users-body').innerHTML = '<tr><td colspan="9" class="muted">Belum ada user.</td></tr>';
+          document.getElementById('users-body').innerHTML = '<tr><td colspan="7" class="muted">Belum ada user.</td></tr>';
         }
         renderPhaseStats(usersCache);
         renderUsersTable();
@@ -2457,7 +2455,7 @@ function renderAdminDashboardPage() {
           const tr = document.createElement('tr');
           const cells = [
               log.reminder_date,
-              log.wa_id,
+              log.name,
               log.response,
               log.response_sudah_count,
               log.response_belum_count,
@@ -3995,14 +3993,15 @@ async function getRecentLogs(db, limit = 50) {
   return dbAll(
     db,
     `SELECT
-      reminder_date,
-      wa_id,
+      rl.reminder_date,
+      u.name,
       response,
       response_sudah_count,
       response_belum_count,
-      created_at
-     FROM reminder_logs
-     ORDER BY reminder_date DESC, id DESC
+      rl.created_at
+     FROM reminder_logs rl
+     LEFT JOIN users u ON u.wa_id = rl.wa_id
+     ORDER BY rl.reminder_date DESC, rl.id DESC
      LIMIT ?`,
     [limit],
   );
