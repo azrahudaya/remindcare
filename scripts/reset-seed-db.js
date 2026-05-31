@@ -53,6 +53,17 @@ function randomResponseForDay(seed, dayIndex, responseRate = 0.7) {
   return belumRoll < 22 ? "Belum" : "Sudah";
 }
 
+function buildReminderCreatedAt(dateKey, seed, dayIndex) {
+  const minute = hashInt(`${seed}-minute-${dayIndex}`) % 13;
+  const second = hashInt(`${seed}-second-${dayIndex}`) % 60;
+  const hourOffset = hashInt(`${seed}-hour-${dayIndex}`) % 2;
+  const hour = 20 + hourOffset;
+  return `${dateKey}T${String(hour).padStart(2, "0")}:${String(minute).padStart(
+    2,
+    "0",
+  )}:${String(second).padStart(2, "0")}+07:00`;
+}
+
 async function createSchema(db) {
   await run(
     db,
@@ -238,6 +249,7 @@ async function seedReminderLogs(db, waId, startDateIso, endDateIso, rate, seed) 
     const day = start.plus({ days: i });
     const dateKey = toDateKey(day);
     const response = randomResponseForDay(seed, i, rate);
+    const createdAt = buildReminderCreatedAt(dateKey, seed, i);
     await run(
       db,
       `INSERT INTO reminder_logs (
@@ -251,7 +263,7 @@ async function seedReminderLogs(db, waId, startDateIso, endDateIso, rate, seed) 
         response ? 1 : 0,
         response === "Sudah" ? 1 : 0,
         response === "Belum" ? 1 : 0,
-        `${dateKey}T20:05:00+07:00`,
+        createdAt,
       ],
     );
   }
