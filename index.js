@@ -23,6 +23,23 @@ const DELIVERY_VALIDATION_POLL_OPTIONS = [
   "Belum melahirkan",
 ];
 const DELIVERY_ARTICLE_URL = "https://remindcares.web.app";
+const MOTHER_CLASS_BASE_URL = (
+  process.env.MOTHER_CLASS_BASE_URL || "https://remindcares.web.app"
+).replace(/\/+$/, "");
+const MOTHER_CLASS_REDIRECTS = {
+  minggu1:
+    "https://drive.google.com/drive/folders/17AIFis9EAt-cOJ87e6MqEHe5FsI5qx7w?usp=sharing",
+  minggu2:
+    "https://drive.google.com/drive/folders/1u8JOVNREvys7QQXcsRlLcz_efs7tx54w?usp=sharing",
+  minggu3:
+    "https://drive.google.com/drive/folders/1yNNdbUzAh-3IdCRF61yU-FjnJf9YAdRS?usp=sharing",
+};
+const MOTHER_CLASS_WINDOW_START_HOUR = Number(
+  process.env.MOTHER_CLASS_WINDOW_START_HOUR || 9,
+);
+const MOTHER_CLASS_WINDOW_END_HOUR = Number(
+  process.env.MOTHER_CLASS_WINDOW_END_HOUR || 12,
+);
 const POSTPARTUM_POLL_OPTIONS = ["Sudah ✅", "Belum ⏳"];
 const ENFORCE_ALLOWLIST = /^(1|true)$/i.test(
   process.env.ENFORCE_ALLOWLIST || "",
@@ -770,6 +787,7 @@ function buildUserInfoMessage(user, postpartumLogs, now = nowWib()) {
     `*Pengingat tablet FE:* ${feReminderText}`,
     `*Pengingat validasi persalinan:* ${deliveryReminderText}`,
     `*Pengingat kunjungan KF/KN:* ${postpartumReminderText}`,
+    `*Pengingat kelas ibu:* ${getMotherClassStatusText(user)}`,
     "",
     "*Data Kehamilan*",
     `*Jam pengingat tablet FE:* ${reminderTime}`,
@@ -1061,6 +1079,104 @@ function buildPostpartumVisitMessage(user, visit) {
 
 function buildPostpartumVisitQuestion(visit) {
   return `Apakah Ibu sudah melakukan kunjungan ${visit.label}?`;
+}
+
+function getMotherClassMaterialUrl(week) {
+  return `${MOTHER_CLASS_BASE_URL}/minggu${week}`;
+}
+
+function isMotherClassSundayWindow(now) {
+  if (!now || !now.isValid || now.weekday !== 7) {
+    return false;
+  }
+  const startHour =
+    Number.isFinite(MOTHER_CLASS_WINDOW_START_HOUR) &&
+    MOTHER_CLASS_WINDOW_START_HOUR >= 0
+      ? Math.floor(MOTHER_CLASS_WINDOW_START_HOUR)
+      : 9;
+  const endHour =
+    Number.isFinite(MOTHER_CLASS_WINDOW_END_HOUR) &&
+    MOTHER_CLASS_WINDOW_END_HOUR > startHour
+      ? Math.floor(MOTHER_CLASS_WINDOW_END_HOUR)
+      : 12;
+  return now.hour >= startHour && now.hour < endHour;
+}
+
+function getMotherClassNextWeek(user) {
+  const nextWeek = Number(user && user.mother_class_next_week);
+  if (!Number.isFinite(nextWeek) || nextWeek < 1) {
+    return 1;
+  }
+  if (nextWeek > 4) {
+    return 5;
+  }
+  return Math.floor(nextWeek);
+}
+
+function isMotherClassCompleted(user) {
+  return (
+    user &&
+    (user.mother_class_status === "completed" ||
+      getMotherClassNextWeek(user) > 4)
+  );
+}
+
+function getMotherClassStatusText(user) {
+  if (!user || !user.mother_class_status) {
+    return withStatusIcon("wait", "Belum dimulai");
+  }
+  if (isMotherClassCompleted(user)) {
+    return withStatusIcon("done", "Selesai");
+  }
+  if (user.mother_class_step) {
+    return withStatusIcon("wait", "Menunggu jawaban kelas ibu minggu 1");
+  }
+  return withStatusIcon(
+    "wait",
+    `Aktif, menunggu pertemuan minggu ${getMotherClassNextWeek(user)}/4`,
+  );
+}
+
+function buildMotherClassWeekMessage(user, week) {
+  const name = getDisplayName(user);
+  if (week === 1) {
+    return `Halo ${name}, selamat pagi. Apa kabar hari ini?\n\nRemindCare ingin mengenalkan kelas ibu hamil. Apakah Ibu sudah pernah mengikuti kelas ibu?\n\nBalas *Sudah* atau *Belum*.`;
+  }
+  if (week === 2) {
+    return `Halo ${name}, selamat pagi. Bagaimana kabarnya hari ini?\n\nSaat ini Ibu memasuki jadwal kelas ibu pertemuan kedua. Bagaimana pengalaman Ibu terkait kelas ibu di minggu yang lalu? Apakah ada yang ingin ditanyakan?\n\nUntuk pertemuan kedua ini Ibu dapat mengakses materi dari link berikut:\n${getMotherClassMaterialUrl(2)}\n\nSelamat menyimak.`;
+  }
+  if (week === 3) {
+    return `Halo ${name}, selamat pagi. Bagaimana kabarnya hari ini?\n\nSaat ini Ibu memasuki jadwal kelas ibu pertemuan ketiga. Bagaimana pengalaman Ibu terkait kelas ibu di minggu yang lalu? Apakah ada yang ingin ditanyakan?\n\nUntuk pertemuan ketiga ini Ibu dapat mengakses materi dari link berikut:\n${getMotherClassMaterialUrl(3)}\n\nSelamat menyimak.`;
+  }
+  return `Halo ${name}, selamat pagi. Saat ini Ibu memasuki jadwal kelas ibu minggu keempat.\n\nUntuk melengkapi kelas ibu, Ibu dianjurkan datang langsung ke fasilitas kesehatan sekitar yang membuka kelas ibu, seperti posyandu, puskesmas, klinik, atau fasilitas kesehatan lainnya.\n\nSilakan hubungi kader, bidan, atau puskesmas setempat untuk jadwal kelas ibu terdekat.`;
+}
+
+function buildMotherClassPendingQuestion(step) {
+  if (step === "week1_location") {
+    return "Kelas ibu pernah diikuti di mana? Contoh: Puskesmas, Kelurahan, RT/RW, Posyandu, atau tempat lainnya.";
+  }
+  if (step === "week1_count") {
+    return "Sudah berapa kali Ibu mengikuti kelas ibu? Balas angka *1* sampai *4*.";
+  }
+  if (step === "week1_area") {
+    return "Ibu berada di wilayah cakupan mana? Contoh: Puskesmas, Kelurahan, RT/RW, atau Posyandu mana.";
+  }
+  return "Apakah Ibu sudah pernah mengikuti kelas ibu? Balas *Sudah* atau *Belum*.";
+}
+
+function buildMotherClassWeek1MaterialMessage() {
+  return `Ibu dapat mengakses materi kelas ibu pertemuan pertama di link berikut:\n${getMotherClassMaterialUrl(1)}\n\nSelamat menyimak.`;
+}
+
+function parseMotherClassAttendanceCount(input) {
+  if (!input) {
+    return null;
+  }
+  const match = String(input).match(/(^|\D)([1-4])(\D|$)/);
+  if (!match) {
+    return null;
+  }
+  return Number(match[2]);
 }
 
 function sendText(client, chatId, text) {
@@ -1416,6 +1532,7 @@ function renderAdminDashboardPage() {
         --text: #0f0f0f;
         --muted: #666666;
         --border: #e3e3e3;
+        --shadow: 0 8px 26px rgba(0,0,0,0.06);
       }
       * { box-sizing: border-box; }
       body {
@@ -1423,6 +1540,10 @@ function renderAdminDashboardPage() {
         font-family: "Lato", sans-serif;
         background: linear-gradient(180deg, #ffffff 0%, #f4f4f4 100%);
         color: var(--text);
+      }
+      .container {
+        width: min(1280px, 100%);
+        margin: 0 auto;
       }
       header {
         padding: 28px 28px 18px;
@@ -1445,6 +1566,7 @@ function renderAdminDashboardPage() {
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
+        align-items: center;
       }
       button, .ghost {
         padding: 10px 16px;
@@ -1465,10 +1587,21 @@ function renderAdminDashboardPage() {
       button:hover, .ghost:hover {
         transform: translateY(-1px);
       }
+      button:focus-visible, .ghost:focus-visible, .phase-filter:focus-visible, input:focus-visible {
+        outline: 2px solid #111;
+        outline-offset: 2px;
+      }
       main {
         padding: 0 28px 40px;
         display: grid;
         gap: 24px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: var(--shadow);
       }
       .stats {
         display: grid;
@@ -1480,7 +1613,7 @@ function renderAdminDashboardPage() {
         border: 1px solid var(--border);
         border-radius: 14px;
         padding: 16px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+        box-shadow: var(--shadow);
       }
       .card .label {
         font-size: 12px;
@@ -1490,11 +1623,105 @@ function renderAdminDashboardPage() {
         font-size: 22px;
         font-weight: 700;
         margin-top: 8px;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        line-height: 1.25;
       }
       .section-title {
         font-size: 15px;
         font-weight: 700;
+        margin: 0;
+      }
+      .section-head {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
         margin-bottom: 12px;
+      }
+      .users-tools {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .search-input {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 13px;
+        min-width: 260px;
+        background: #fff;
+      }
+      .phase-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 14px;
+      }
+      .phase-card {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .phase-card .label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .phase-card .value {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 8px;
+      }
+      .phase-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .phase-filter {
+        border: 1px solid var(--border);
+        background: #fff;
+        color: #222;
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .phase-filter.active {
+        background: #111;
+        color: #fff;
+        border-color: #111;
+      }
+      .phase-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+      .phase-kehamilan {
+        background: #eef8f1;
+        color: #1f5f35;
+        border-color: #cfe9d9;
+      }
+      .phase-persalinan {
+        background: #fff4e8;
+        color: #8a4b12;
+        border-color: #f4d8bc;
+      }
+      .phase-pasca {
+        background: #eaf2ff;
+        color: #1f457d;
+        border-color: #c8dafb;
+      }
+      .phase-onboarding {
+        background: #f3f3f3;
+        color: #4d4d4d;
+        border-color: #dbdbdb;
       }
       table {
         width: 100%;
@@ -1505,10 +1732,16 @@ function renderAdminDashboardPage() {
         overflow: hidden;
         font-size: 13px;
       }
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        border-radius: 14px;
+      }
       th, td {
         text-align: left;
         padding: 10px 12px;
         border-bottom: 1px solid var(--border);
+        white-space: nowrap;
       }
       th {
         background: #f2f2f2;
@@ -1570,11 +1803,13 @@ function renderAdminDashboardPage() {
         align-items: center;
         justify-content: space-between;
         gap: 12px;
+        flex-wrap: wrap;
       }
       .modal-actions {
         display: flex;
         gap: 10px;
         align-items: center;
+        flex-wrap: wrap;
       }
       .modal-title {
         font-size: 18px;
@@ -1588,8 +1823,69 @@ function renderAdminDashboardPage() {
       }
       .detail-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
         gap: 12px;
+      }
+      .modal-body table th,
+      .modal-body table td {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        vertical-align: top;
+      }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+      .status-sudah {
+        background: #edf9f0;
+        border-color: #cce9d5;
+        color: #1e6239;
+      }
+      .status-belum {
+        background: #fff3ef;
+        border-color: #f5d6cc;
+        color: #8b3f1c;
+      }
+      .status-pending {
+        background: #f3f3f3;
+        border-color: #dbdbdb;
+        color: #4d4d4d;
+      }
+      .progress-badges {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .progress-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 4px 8px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid var(--border);
+        background: #fff;
+      }
+      .progress-ok {
+        background: #edf9f0;
+        border-color: #cce9d5;
+        color: #1e6239;
+      }
+      .progress-warn {
+        background: #fff3ef;
+        border-color: #f5d6cc;
+        color: #8b3f1c;
+      }
+      .progress-info {
+        background: #eef3ff;
+        border-color: #d4ddfb;
+        color: #244b86;
       }
       .toast {
         position: fixed;
@@ -1609,13 +1905,29 @@ function renderAdminDashboardPage() {
         transform: translateY(0);
       }
       @media (max-width: 720px) {
-        header, main { padding: 20px; }
+        header, main { padding: 16px; }
+        .actions { width: 100%; }
+        .actions > * { flex: 1 1 auto; }
+        .search-input { min-width: 180px; width: 100%; }
+        .users-tools { width: 100%; }
+        .phase-filters { width: 100%; overflow-x: auto; white-space: nowrap; padding-bottom: 2px; }
         table { font-size: 12px; }
+        .modal {
+          width: 100%;
+          max-height: 96vh;
+          border-radius: 12px;
+        }
+        .modal-header, .modal-body {
+          padding: 14px;
+        }
+        .card .value {
+          font-size: 18px;
+        }
       }
     </style>
   </head>
   <body>
-    <header>
+    <header class="container">
       <div>
         <h1>RemindCare Admin</h1>
         <div class="subtitle">Dashboard ringkas pengguna dan pengingat</div>
@@ -1631,7 +1943,7 @@ function renderAdminDashboardPage() {
         </form>
       </div>
     </header>
-    <main>
+    <main class="container">
       <section class="stats">
         <div class="card"><div class="label">Total Users</div><div class="value" id="stat-users-total">-</div></div>
         <div class="card"><div class="label">Aktif</div><div class="value" id="stat-users-active">-</div></div>
@@ -1641,29 +1953,54 @@ function renderAdminDashboardPage() {
         <div class="card"><div class="label">Belum (hari ini)</div><div class="value" id="stat-today-belum">-</div></div>
       </section>
 
-      <section class="grid">
-        <div class="section-title">Daftar Users</div>
+      <section class="grid panel">
+        <div class="section-title">Klasifikasi Fase</div>
+        <div class="phase-stats">
+          <div class="phase-card"><div class="label">Onboarding</div><div class="value" id="phase-onboarding">-</div></div>
+          <div class="phase-card"><div class="label">Kehamilan</div><div class="value" id="phase-kehamilan">-</div></div>
+          <div class="phase-card"><div class="label">Persalinan</div><div class="value" id="phase-persalinan">-</div></div>
+          <div class="phase-card"><div class="label">Pasca Kehamilan</div><div class="value" id="phase-pasca">-</div></div>
+        </div>
+      </section>
+
+      <section class="grid panel">
+        <div class="section-head">
+          <div class="section-title">Daftar Users</div>
+          <div class="users-tools">
+            <input id="users-search" class="search-input" placeholder="Cari nama / nomor WA">
+            <div class="phase-filters">
+              <button class="phase-filter active" data-phase-filter="all">Semua</button>
+              <button class="phase-filter" data-phase-filter="onboarding">Onboarding</button>
+              <button class="phase-filter" data-phase-filter="kehamilan">Kehamilan</button>
+              <button class="phase-filter" data-phase-filter="persalinan">Persalinan</button>
+              <button class="phase-filter" data-phase-filter="pasca_kehamilan">Pasca Kehamilan</button>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>WA ID</th>
               <th>Nama</th>
+              <th>Fase</th>
               <th>Status</th>
               <th>Jam</th>
               <th>Respon Terakhir</th>
               <th>Jawaban Terakhir</th>
-              <th>Total Sudah</th>
-              <th>Total Belum</th>
+              <th>Progress Program</th>
             </tr>
           </thead>
           <tbody id="users-body">
             <tr><td colspan="8" class="muted">Loading...</td></tr>
           </tbody>
         </table>
+        </div>
       </section>
 
-      <section class="grid">
+      <section class="grid panel">
         <div class="section-title">Log Terbaru</div>
+        <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -1679,6 +2016,7 @@ function renderAdminDashboardPage() {
             <tr><td colspan="6" class="muted">Loading...</td></tr>
           </tbody>
         </table>
+        </div>
       </section>
     </main>
 
@@ -1697,10 +2035,14 @@ function renderAdminDashboardPage() {
         <div class="modal-body">
           <div class="detail-grid" id="detail-stats">
             <div class="card"><div class="label">Status</div><div class="value" id="detail-status">-</div></div>
+            <div class="card"><div class="label">Fase</div><div class="value" id="detail-phase">-</div></div>
             <div class="card"><div class="label">Jam Pengingat</div><div class="value" id="detail-time">-</div></div>
+            <div class="card"><div class="label">Tanggal Persalinan</div><div class="value" id="detail-delivery-date">-</div></div>
             <div class="card"><div class="label">Total Sudah</div><div class="value" id="detail-total-sudah">-</div></div>
             <div class="card"><div class="label">Total Belum</div><div class="value" id="detail-total-belum">-</div></div>
           </div>
+          <div class="section-title">Progress Program</div>
+          <div class="progress-badges" id="detail-progress-badges"></div>
           <div class="section-title">Data Persalinan</div>
           <table>
             <thead>
@@ -1758,12 +2100,184 @@ function renderAdminDashboardPage() {
       function fmt(value) {
         return value === null || value === undefined || value === '' ? '-' : value;
       }
+      function fmtDateTime(value) {
+        if (!value) return '-';
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return String(value);
+        return parsed.toLocaleString('id-ID');
+      }
+      function classifyPhase(user) {
+        const hasPostpartum = Number(user.postpartum_total || 0) > 0 || !!user.delivery_date_iso;
+        if (hasPostpartum) {
+          return 'pasca_kehamilan';
+        }
+        const hasLaborSignals =
+          (Number(user.delivery_data_step || 0) > 0) ||
+          !!user.delivery_poll_stage ||
+          !!user.delivery_hpl_poll_sent_date ||
+          !!user.delivery_hpl3_poll_sent_date ||
+          user.delivery_hpl_response === 'Sudah' ||
+          user.delivery_hpl3_response === 'Sudah';
+        if (hasLaborSignals) {
+          return 'persalinan';
+        }
+        if (user.status === 'onboarding' || !user.hpht_iso) {
+          return 'onboarding';
+        }
+        return 'kehamilan';
+      }
+      function phaseLabel(phase) {
+        if (phase === 'kehamilan') return 'Kehamilan';
+        if (phase === 'persalinan') return 'Persalinan';
+        if (phase === 'pasca_kehamilan') return 'Pasca Kehamilan';
+        return 'Onboarding';
+      }
+      function phaseBadgeClass(phase) {
+        if (phase === 'kehamilan') return 'phase-kehamilan';
+        if (phase === 'persalinan') return 'phase-persalinan';
+        if (phase === 'pasca_kehamilan') return 'phase-pasca';
+        return 'phase-onboarding';
+      }
+      function clampPercent(value) {
+        if (!Number.isFinite(value)) return 0;
+        if (value < 0) return 0;
+        if (value > 100) return 100;
+        return Math.round(value);
+      }
+      function computeProgress(user, postpartumLogs) {
+        const totalLogs = Number(user.total_logs || 0);
+        const totalAnswered = Number(user.total_answered || 0);
+        const fePct = totalLogs > 0 ? clampPercent((totalAnswered * 100) / totalLogs) : 0;
+
+        const deliveryDone = !!user.delivery_data_completed_at || !!user.delivery_date_iso;
+        const deliveryState = deliveryDone
+          ? 'Selesai'
+          : (Number(user.delivery_data_step || 0) > 0 || user.delivery_hpl_response === 'Sudah' || user.delivery_hpl3_response === 'Sudah')
+            ? 'Proses'
+            : 'Belum';
+
+        const ppTotal = Number(user.postpartum_total || ((postpartumLogs || []).length || 0));
+        const ppSudah = Number(user.postpartum_sudah || ((postpartumLogs || []).filter((x) => x.response === 'Sudah').length || 0));
+        const ppPct = ppTotal > 0 ? clampPercent((ppSudah * 100) / ppTotal) : 0;
+
+        const motherClassDone = user.mother_class_status === 'completed' || Number(user.mother_class_next_week || 1) > 4;
+        const motherClassCount = Number(user.mother_class_attendance_count || 0);
+        const motherClassPct = motherClassDone ? 100 : clampPercent((motherClassCount * 100) / 4);
+
+        return {
+          feText: 'FE ' + fePct + '%',
+          feClass: fePct >= 70 ? 'progress-ok' : (fePct > 0 ? 'progress-info' : 'progress-warn'),
+          deliveryText: 'Persalinan ' + deliveryState,
+          deliveryClass: deliveryState === 'Selesai' ? 'progress-ok' : (deliveryState === 'Proses' ? 'progress-info' : 'progress-warn'),
+          postpartumText: 'KF/KN ' + ppPct + '%',
+          postpartumClass: ppPct >= 75 ? 'progress-ok' : (ppPct > 0 ? 'progress-info' : 'progress-warn'),
+          motherClassText: 'Kelas Ibu ' + motherClassPct + '%',
+          motherClassClass: motherClassPct >= 75 ? 'progress-ok' : (motherClassPct > 0 ? 'progress-info' : 'progress-warn')
+        };
+      }
+      function createProgressBadges(progress) {
+        const wrap = document.createElement('div');
+        wrap.className = 'progress-badges';
+        const rows = [
+          [progress.feText, progress.feClass],
+          [progress.deliveryText, progress.deliveryClass],
+          [progress.postpartumText, progress.postpartumClass],
+          [progress.motherClassText, progress.motherClassClass]
+        ];
+        for (const [text, cls] of rows) {
+          const badge = document.createElement('span');
+          badge.className = 'progress-badge ' + cls;
+          badge.textContent = text;
+          wrap.appendChild(badge);
+        }
+        return wrap;
+      }
       async function fetchJson(url) {
         const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
         if (!res.ok) {
           throw new Error('Gagal memuat data');
         }
         return res.json();
+      }
+      function renderPhaseStats(users) {
+        const counts = {
+          onboarding: 0,
+          kehamilan: 0,
+          persalinan: 0,
+          pasca_kehamilan: 0
+        };
+        for (const user of users) {
+          counts[classifyPhase(user)] += 1;
+        }
+        document.getElementById('phase-onboarding').textContent = counts.onboarding;
+        document.getElementById('phase-kehamilan').textContent = counts.kehamilan;
+        document.getElementById('phase-persalinan').textContent = counts.persalinan;
+        document.getElementById('phase-pasca').textContent = counts.pasca_kehamilan;
+        const labels = {
+          all: 'Semua',
+          onboarding: 'Onboarding',
+          kehamilan: 'Kehamilan',
+          persalinan: 'Persalinan',
+          pasca_kehamilan: 'Pasca Kehamilan'
+        };
+        const filterCounts = { all: users.length, ...counts };
+        for (const btn of document.querySelectorAll('.phase-filter')) {
+          const key = btn.getAttribute('data-phase-filter');
+          btn.textContent = labels[key] + ' (' + (filterCounts[key] || 0) + ')';
+        }
+      }
+      let usersCache = [];
+      let activePhaseFilter = 'all';
+      let searchKeyword = '';
+      function renderUsersTable() {
+        const tbody = document.getElementById('users-body');
+        const filtered = usersCache.filter((user) => {
+          const phaseOk =
+            activePhaseFilter === 'all' || classifyPhase(user) === activePhaseFilter;
+          if (!phaseOk) return false;
+          if (!searchKeyword) return true;
+          const haystack = [user.wa_id, user.name].map((x) => String(x || '').toLowerCase()).join(' ');
+          return haystack.includes(searchKeyword);
+        });
+        tbody.innerHTML = '';
+        if (!filtered.length) {
+          tbody.innerHTML = '<tr><td colspan="8" class="muted">Tidak ada user pada filter ini.</td></tr>';
+          return;
+        }
+        for (const user of filtered) {
+          const tr = document.createElement('tr');
+          tr.classList.add('row-clickable');
+          tr.dataset.waId = user.wa_id;
+          tr.addEventListener('click', () => {
+            window.location.href = '/admin/users/' + encodeURIComponent(user.wa_id);
+          });
+          const cells = [
+            user.wa_id,
+            user.name,
+            phaseLabel(classifyPhase(user)),
+            user.status,
+            user.reminder_time,
+            user.last_response_date,
+            user.last_response
+          ];
+          cells.forEach((value, index) => {
+            const td = document.createElement('td');
+            if (index === 2) {
+              const badge = document.createElement('span');
+              const phase = classifyPhase(user);
+              badge.className = 'phase-badge ' + phaseBadgeClass(phase);
+              badge.textContent = phaseLabel(phase);
+              td.appendChild(badge);
+            } else {
+              td.textContent = fmt(value);
+            }
+            tr.appendChild(td);
+          });
+          const tdProgress = document.createElement('td');
+          tdProgress.appendChild(createProgressBadges(computeProgress(user)));
+          tr.appendChild(tdProgress);
+          tbody.appendChild(tr);
+        }
       }
       async function loadSummary() {
         const data = await fetchJson('/admin/api/summary');
@@ -1776,34 +2290,12 @@ function renderAdminDashboardPage() {
       }
       async function loadUsers() {
         const data = await fetchJson('/admin/api/users');
-        const tbody = document.getElementById('users-body');
-        tbody.innerHTML = '';
-        if (!data.users.length) {
-          tbody.innerHTML = '<tr><td colspan="8" class="muted">Belum ada user.</td></tr>';
-          return;
+        usersCache = data.users || [];
+        if (!usersCache.length) {
+          document.getElementById('users-body').innerHTML = '<tr><td colspan="9" class="muted">Belum ada user.</td></tr>';
         }
-        for (const user of data.users) {
-          const tr = document.createElement('tr');
-          tr.classList.add('row-clickable');
-          tr.dataset.waId = user.wa_id;
-          tr.addEventListener('click', () => openUserDetail(user.wa_id));
-          const cells = [
-            user.wa_id,
-            user.name,
-            user.status,
-            user.reminder_time,
-            user.last_response_date,
-            user.last_response,
-            user.total_sudah,
-            user.total_belum
-          ];
-          for (const value of cells) {
-            const td = document.createElement('td');
-            td.textContent = fmt(value);
-            tr.appendChild(td);
-          }
-          tbody.appendChild(tr);
-        }
+        renderPhaseStats(usersCache);
+        renderUsersTable();
       }
       const overlay = document.getElementById('user-overlay');
       const closeBtn = document.getElementById('detail-close');
@@ -1850,24 +2342,35 @@ function renderAdminDashboardPage() {
       }
       function renderPostpartumLogs(logs) {
         const tbody = document.getElementById('detail-postpartum-body');
-        const confirmedLogs = (logs || []).filter((log) => log.response === 'Sudah');
-        if (!confirmedLogs.length) {
-          tbody.innerHTML = '<tr><td colspan="3" class="muted">Belum ada konfirmasi kunjungan (Sudah).</td></tr>';
+        const rows = logs || [];
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="3" class="muted">Belum ada history kunjungan.</td></tr>';
           return;
         }
         tbody.innerHTML = '';
-        for (const log of confirmedLogs) {
+        for (const log of rows) {
           const tr = document.createElement('tr');
-          const cells = [
-            log.visit_label || log.visit_code,
-            'Sudah ✅',
-            log.response_at
-          ];
-          for (const value of cells) {
-            const td = document.createElement('td');
-            td.textContent = fmt(value);
-            tr.appendChild(td);
+          const tdVisit = document.createElement('td');
+          tdVisit.textContent = fmt(log.visit_label || log.visit_code);
+          tr.appendChild(tdVisit);
+          const tdStatus = document.createElement('td');
+          const badge = document.createElement('span');
+          const response = log.response || 'Pending';
+          if (response === 'Sudah') {
+            badge.className = 'status-badge status-sudah';
+            badge.textContent = 'Sudah';
+          } else if (response === 'Belum') {
+            badge.className = 'status-badge status-belum';
+            badge.textContent = 'Belum';
+          } else {
+            badge.className = 'status-badge status-pending';
+            badge.textContent = 'Pending';
           }
+          tdStatus.appendChild(badge);
+          tr.appendChild(tdStatus);
+          const tdDate = document.createElement('td');
+          tdDate.textContent = fmtDateTime(log.response_at || log.sent_at || log.due_at);
+          tr.appendChild(tdDate);
           tbody.appendChild(tr);
         }
       }
@@ -1880,9 +2383,12 @@ function renderAdminDashboardPage() {
           '/admin/api/users/' + encodeURIComponent(waId) + '/export.csv'
         );
         document.getElementById('detail-status').textContent = '-';
+        document.getElementById('detail-phase').textContent = '-';
         document.getElementById('detail-time').textContent = '-';
+        document.getElementById('detail-delivery-date').textContent = '-';
         document.getElementById('detail-total-sudah').textContent = '-';
         document.getElementById('detail-total-belum').textContent = '-';
+        document.getElementById('detail-progress-badges').innerHTML = '';
         const deliveryBody = document.getElementById('detail-delivery-body');
         deliveryBody.innerHTML = '<tr><td colspan="2" class="muted">Memuat data...</td></tr>';
         const postpartumBody = document.getElementById('detail-postpartum-body');
@@ -1895,9 +2401,21 @@ function renderAdminDashboardPage() {
           document.getElementById('detail-name').textContent = fmt(user.name || 'Detail User');
           document.getElementById('detail-wa').textContent = fmt(user.wa_id);
           document.getElementById('detail-status').textContent = fmt(user.status);
+          document.getElementById('detail-phase').textContent = phaseLabel(classifyPhase(user));
           document.getElementById('detail-time').textContent = fmt(user.reminder_time);
+          document.getElementById('detail-delivery-date').textContent = fmt(user.delivery_date_iso || user.delivery_date);
           document.getElementById('detail-total-sudah').textContent = fmt(data.totals.total_sudah);
           document.getElementById('detail-total-belum').textContent = fmt(data.totals.total_belum);
+          const progress = computeProgress({
+            ...user,
+            total_logs: (data.logs || []).length,
+            total_answered: (data.logs || []).filter((x) => x.response).length,
+            postpartum_total: (data.postpartum_logs || []).length,
+            postpartum_sudah: (data.postpartum_logs || []).filter((x) => x.response === 'Sudah').length
+          }, data.postpartum_logs || []);
+          const progressWrap = document.getElementById('detail-progress-badges');
+          progressWrap.innerHTML = '';
+          progressWrap.appendChild(createProgressBadges(progress));
           renderDeliveryDetails(user);
           renderPostpartumLogs(data.postpartum_logs || []);
           detailBody.innerHTML = '';
@@ -1912,7 +2430,7 @@ function renderAdminDashboardPage() {
               log.response,
               log.response_sudah_count,
               log.response_belum_count,
-              log.created_at
+              fmtDateTime(log.created_at)
             ];
             for (const value of cells) {
               const td = document.createElement('td');
@@ -1938,13 +2456,13 @@ function renderAdminDashboardPage() {
         for (const log of data.logs) {
           const tr = document.createElement('tr');
           const cells = [
-            log.reminder_date,
-            log.wa_id,
-            log.response,
-            log.response_sudah_count,
-            log.response_belum_count,
-            log.created_at
-          ];
+              log.reminder_date,
+              log.wa_id,
+              log.response,
+              log.response_sudah_count,
+              log.response_belum_count,
+              fmtDateTime(log.created_at)
+            ];
           for (const value of cells) {
             const td = document.createElement('td');
             td.textContent = fmt(value);
@@ -1962,7 +2480,189 @@ function renderAdminDashboardPage() {
         }
       }
       document.getElementById('refresh-btn').addEventListener('click', () => loadAll());
+      for (const btn of document.querySelectorAll('.phase-filter')) {
+        btn.addEventListener('click', () => {
+          activePhaseFilter = btn.getAttribute('data-phase-filter') || 'all';
+          for (const other of document.querySelectorAll('.phase-filter')) {
+            other.classList.remove('active');
+          }
+          btn.classList.add('active');
+          renderUsersTable();
+        });
+      }
+      document.getElementById('users-search').addEventListener('input', (event) => {
+        searchKeyword = String(event.target.value || '').trim().toLowerCase();
+        renderUsersTable();
+      });
       loadAll();
+    </script>
+  </body>
+</html>`;
+}
+
+function renderAdminUserDetailPage(waId) {
+  const safeWaId = escapeHtml(waId || "");
+  return `<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Detail User - RemindCare Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+      :root { --bg:#f7f7f7; --panel:#fff; --text:#0f0f0f; --muted:#666; --border:#e3e3e3; --shadow:0 8px 26px rgba(0,0,0,.06); }
+      *{box-sizing:border-box} body{margin:0;font-family:"Lato",sans-serif;background:linear-gradient(180deg,#fff 0%,#f4f4f4 100%);color:var(--text)}
+      .container{width:min(1080px,100%);margin:0 auto;padding:20px}
+      .top{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+      .title{font-size:24px;font-weight:700;margin:0}
+      .muted{color:var(--muted);font-size:12px}
+      .btn{padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#fff;color:#111;text-decoration:none;font-size:13px;font-weight:700}
+      .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:var(--shadow);margin-top:14px}
+      .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+      .label{font-size:12px;color:var(--muted)} .value{font-size:18px;font-weight:700;margin-top:6px;overflow-wrap:anywhere}
+      table{width:100%;border-collapse:collapse;font-size:13px}
+      th,td{text-align:left;padding:10px;border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:anywhere}
+      .table-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+      .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;flex-wrap:wrap}
+      .pager button{padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#fff}
+      @media (max-width:720px){.container{padding:14px}.value{font-size:16px}}
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="top">
+        <div>
+          <h1 class="title" id="name">Detail User</h1>
+          <div class="muted" id="wa">${safeWaId}</div>
+        </div>
+        <div class="top">
+          <a class="btn" href="/admin">Kembali</a>
+          <a class="btn" id="csv" href="/admin/api/users/${encodeURIComponent(
+            waId || "",
+          )}/export.csv">Download CSV</a>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="grid">
+          <div><div class="label">Status</div><div class="value" id="status">-</div></div>
+          <div><div class="label">Fase</div><div class="value" id="phase">-</div></div>
+          <div><div class="label">Jam Pengingat</div><div class="value" id="time">-</div></div>
+          <div><div class="label">Tanggal Persalinan</div><div class="value" id="delivery-date">-</div></div>
+          <div><div class="label">Total Sudah</div><div class="value" id="sudah">-</div></div>
+          <div><div class="label">Total Belum</div><div class="value" id="belum">-</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="label" style="margin-bottom:8px">Data Kelas Ibu</div>
+        <div class="table-wrap"><table><tbody id="mother-class-body"></tbody></table></div>
+      </div>
+
+      <div class="panel">
+        <div class="label" style="margin-bottom:8px">Data Persalinan</div>
+        <div class="table-wrap"><table><tbody id="delivery-body"></tbody></table></div>
+      </div>
+
+      <div class="panel">
+        <div class="label" style="margin-bottom:8px">History Kunjungan Nifas & Bayi</div>
+        <div class="table-wrap"><table><thead><tr><th>Kunjungan</th><th>Status</th><th>Tanggal</th></tr></thead><tbody id="pp-body"></tbody></table></div>
+      </div>
+
+      <div class="panel">
+        <div class="label" style="margin-bottom:8px">History Reminder</div>
+        <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Jawaban</th><th>Sudah</th><th>Belum</th><th>Created At</th></tr></thead><tbody id="logs-body"></tbody></table></div>
+        <div class="pager">
+          <button id="prev">Sebelumnya</button>
+          <span class="muted" id="page-info">-</span>
+          <button id="next">Berikutnya</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      const waId = ${JSON.stringify(waId || "")};
+      let page = 0;
+      const limit = 20;
+      let totalLogs = 0;
+      function fmt(v){ return v===null||v===undefined||v===''?'-':v; }
+      function fmtDt(v){ if(!v) return '-'; const d=new Date(v); return Number.isNaN(d.getTime())?String(v):d.toLocaleString('id-ID'); }
+      function classifyPhase(user){
+        if ((Number(user.postpartum_total||0)>0)||user.delivery_date_iso) return 'Pasca Kehamilan';
+        if ((Number(user.delivery_data_step||0)>0)||user.delivery_poll_stage||user.delivery_hpl_poll_sent_date||user.delivery_hpl3_poll_sent_date||user.delivery_hpl_response==='Sudah'||user.delivery_hpl3_response==='Sudah') return 'Persalinan';
+        if (user.status==='onboarding'||!user.hpht_iso) return 'Onboarding';
+        return 'Kehamilan';
+      }
+      async function fetchJson(url){ const r = await fetch(url,{headers:{Accept:'application/json'}}); if(!r.ok) throw new Error('Gagal memuat data'); return r.json(); }
+      function renderRows(tbody, rows, mapper, emptyText, colspan){
+        tbody.innerHTML = '';
+        if(!rows || !rows.length){ tbody.innerHTML = '<tr><td colspan="'+colspan+'" class="muted">'+emptyText+'</td></tr>'; return; }
+        rows.forEach((row)=>{ const tr=document.createElement('tr'); mapper(row).forEach((cell)=>{ const td=document.createElement('td'); td.textContent=fmt(cell); tr.appendChild(td);}); tbody.appendChild(tr); });
+      }
+      async function loadDetail(){
+        const data = await fetchJson('/admin/api/users/' + encodeURIComponent(waId));
+        const user = data.user || {};
+        document.getElementById('name').textContent = fmt(user.name || 'Detail User');
+        document.getElementById('wa').textContent = fmt(user.wa_id);
+        document.getElementById('status').textContent = fmt(user.status);
+        document.getElementById('phase').textContent = classifyPhase(user);
+        document.getElementById('time').textContent = fmt(user.reminder_time);
+        document.getElementById('delivery-date').textContent = fmt(user.delivery_date_iso || user.delivery_date);
+        document.getElementById('sudah').textContent = fmt(data.totals && data.totals.total_sudah);
+        document.getElementById('belum').textContent = fmt(data.totals && data.totals.total_belum);
+        const deliveryRows = [
+          ['Validasi HPL', user.delivery_hpl_response],
+          ['Validasi HPL +3', user.delivery_hpl3_response],
+          ['Tanggal melahirkan', user.delivery_date_iso || user.delivery_date],
+          ['Jam melahirkan', user.delivery_time],
+          ['Tempat melahirkan', user.delivery_place],
+          ['Penolong persalinan', user.delivery_birth_attendant],
+          ['Penyulit persalinan', user.delivery_with_complication],
+          ['Jenis kelamin bayi', user.baby_gender],
+          ['Berat badan bayi', user.baby_birth_weight],
+          ['Keluhan ibu saat ini', user.mother_current_complaint],
+          ['Data selesai diisi', user.delivery_data_completed_at]
+        ];
+        renderRows(document.getElementById('delivery-body'), deliveryRows, (r)=>r, 'Belum ada data persalinan.', 2);
+        const motherClassRows = [
+          ['Status kelas ibu', user.mother_class_status],
+          ['Pertemuan berikutnya', user.mother_class_next_week ? ('Minggu ke-' + user.mother_class_next_week) : null],
+          ['Jumlah kehadiran', user.mother_class_attendance_count !== null && user.mother_class_attendance_count !== undefined ? (user.mother_class_attendance_count + ' kali') : null],
+          ['Pernah ikut kelas ibu', user.mother_class_attended === 1 ? 'Ya' : (user.mother_class_attended === 0 ? 'Tidak' : null)],
+          ['Lokasi kelas ibu', user.mother_class_location],
+          ['Wilayah kelas ibu', user.mother_class_area],
+          ['Mulai kelas ibu', fmtDt(user.mother_class_started_at)],
+          ['Terakhir dikirim', fmt(user.mother_class_last_sent_date)],
+          ['Selesai kelas ibu', fmtDt(user.mother_class_completed_at)]
+        ];
+        renderRows(document.getElementById('mother-class-body'), motherClassRows, (r)=>r, 'Belum ada data kelas ibu.', 2);
+        renderRows(
+          document.getElementById('pp-body'),
+          data.postpartum_logs || [],
+          (x)=>[x.visit_label || x.visit_code, x.response || 'Pending', fmtDt(x.response_at || x.sent_at || x.due_at)],
+          'Belum ada history kunjungan.',
+          3
+        );
+      }
+      async function loadLogs(){
+        const data = await fetchJson('/admin/api/users/' + encodeURIComponent(waId) + '/logs?limit=' + limit + '&offset=' + (page * limit));
+        totalLogs = Number(data.total || 0);
+        renderRows(
+          document.getElementById('logs-body'),
+          data.logs || [],
+          (x)=>[x.reminder_date, x.response, x.response_sudah_count, x.response_belum_count, fmtDt(x.created_at)],
+          'Belum ada history reminder.',
+          5
+        );
+        const totalPages = Math.max(1, Math.ceil(totalLogs / limit));
+        document.getElementById('page-info').textContent = 'Halaman ' + (page + 1) + ' / ' + totalPages;
+        document.getElementById('prev').disabled = page <= 0;
+        document.getElementById('next').disabled = page >= totalPages - 1;
+      }
+      document.getElementById('prev').addEventListener('click', async ()=>{ if(page<=0) return; page -= 1; await loadLogs(); });
+      document.getElementById('next').addEventListener('click', async ()=>{ const tp = Math.max(1, Math.ceil(totalLogs / limit)); if(page>=tp-1) return; page += 1; await loadLogs(); });
+      Promise.all([loadDetail(), loadLogs()]);
     </script>
   </body>
 </html>`;
@@ -2182,6 +2882,72 @@ async function ensureUserColumns(db) {
     "users",
     "postpartum_education_sent_at",
     "postpartum_education_sent_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_status",
+    "mother_class_status TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_started_at",
+    "mother_class_started_at TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_next_week",
+    "mother_class_next_week INTEGER NOT NULL DEFAULT 1",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_last_sent_week",
+    "mother_class_last_sent_week INTEGER",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_last_sent_date",
+    "mother_class_last_sent_date TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_step",
+    "mother_class_step TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_attended",
+    "mother_class_attended INTEGER",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_location",
+    "mother_class_location TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_attendance_count",
+    "mother_class_attendance_count INTEGER",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_area",
+    "mother_class_area TEXT",
+  );
+  await ensureColumn(
+    db,
+    "users",
+    "mother_class_completed_at",
+    "mother_class_completed_at TEXT",
   );
 }
 
@@ -2516,6 +3282,17 @@ async function initDb(db) {
       mother_current_complaint TEXT,
       delivery_data_completed_at TEXT,
       postpartum_education_sent_at TEXT,
+      mother_class_status TEXT,
+      mother_class_started_at TEXT,
+      mother_class_next_week INTEGER NOT NULL DEFAULT 1,
+      mother_class_last_sent_week INTEGER,
+      mother_class_last_sent_date TEXT,
+      mother_class_step TEXT,
+      mother_class_attended INTEGER,
+      mother_class_location TEXT,
+      mother_class_attendance_count INTEGER,
+      mother_class_area TEXT,
+      mother_class_completed_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
@@ -2657,6 +3434,25 @@ async function updateUser(db, waId, updates) {
     `UPDATE users SET ${setClause}, updated_at = ? WHERE wa_id = ?`,
     params,
   );
+}
+
+function getMotherClassActivationUpdates(user, now = nowWib()) {
+  if (user && user.mother_class_status) {
+    return {};
+  }
+  return {
+    mother_class_status: "active",
+    mother_class_started_at: now.toISO(),
+    mother_class_next_week: 1,
+    mother_class_last_sent_week: null,
+    mother_class_last_sent_date: null,
+    mother_class_step: null,
+    mother_class_attended: null,
+    mother_class_location: null,
+    mother_class_attendance_count: null,
+    mother_class_area: null,
+    mother_class_completed_at: null,
+  };
 }
 
 function parseYesNo(input) {
@@ -2957,7 +3753,12 @@ async function getAdminUsers(db) {
       u.wa_id,
       u.name,
       u.status,
+      u.hpht_iso,
       u.reminder_time,
+      u.delivery_data_step,
+      u.delivery_poll_stage,
+      u.delivery_hpl_poll_sent_date,
+      u.delivery_hpl3_poll_sent_date,
       u.delivery_hpl_response,
       u.delivery_hpl3_response,
       u.delivery_date_iso,
@@ -2969,17 +3770,24 @@ async function getAdminUsers(db) {
       u.baby_birth_weight,
       u.mother_current_complaint,
       u.delivery_data_completed_at,
+      u.mother_class_status,
+      u.mother_class_next_week,
+      u.mother_class_attendance_count,
       COALESCE(pv.postpartum_total, 0) as postpartum_total,
       COALESCE(pv.postpartum_sent, 0) as postpartum_sent,
       COALESCE(pv.postpartum_sudah, 0) as postpartum_sudah,
       COALESCE(pv.postpartum_belum, 0) as postpartum_belum,
       rl_last.reminder_date as last_response_date,
       rl_last.response as last_response,
+      COALESCE(agg.total_logs, 0) as total_logs,
+      COALESCE(agg.total_answered, 0) as total_answered,
       COALESCE(agg.total_sudah, 0) as total_sudah,
       COALESCE(agg.total_belum, 0) as total_belum
      FROM users u
      LEFT JOIN (
        SELECT wa_id,
+              COUNT(*) as total_logs,
+              SUM(CASE WHEN response IS NOT NULL THEN 1 ELSE 0 END) as total_answered,
               SUM(CASE WHEN response = 'Sudah' THEN 1 ELSE 0 END) as total_sudah,
               SUM(CASE WHEN response = 'Belum' THEN 1 ELSE 0 END) as total_belum
        FROM reminder_logs
@@ -3087,6 +3895,17 @@ async function restartUserDataFromBeginning(db, waId) {
     mother_current_complaint: null,
     delivery_data_completed_at: null,
     postpartum_education_sent_at: null,
+    mother_class_status: null,
+    mother_class_started_at: null,
+    mother_class_next_week: 1,
+    mother_class_last_sent_week: null,
+    mother_class_last_sent_date: null,
+    mother_class_step: null,
+    mother_class_attended: null,
+    mother_class_location: null,
+    mother_class_attendance_count: null,
+    mother_class_area: null,
+    mother_class_completed_at: null,
   });
 }
 
@@ -3187,6 +4006,40 @@ async function getRecentLogs(db, limit = 50) {
      LIMIT ?`,
     [limit],
   );
+}
+
+async function getUserLogsPaged(db, waId, limit = 20, offset = 0) {
+  const safeLimit = Number.isFinite(Number(limit))
+    ? Math.min(200, Math.max(1, Number(limit)))
+    : 20;
+  const safeOffset = Number.isFinite(Number(offset))
+    ? Math.max(0, Number(offset))
+    : 0;
+  const totalRow = await dbGet(
+    db,
+    "SELECT COUNT(*) as count FROM reminder_logs WHERE wa_id = ?",
+    [waId],
+  );
+  const logs = await dbAll(
+    db,
+    `SELECT
+      reminder_date,
+      response,
+      response_sudah_count,
+      response_belum_count,
+      created_at
+     FROM reminder_logs
+     WHERE wa_id = ?
+     ORDER BY reminder_date DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [waId, safeLimit, safeOffset],
+  );
+  return {
+    total: totalRow && totalRow.count ? totalRow.count : 0,
+    logs,
+    limit: safeLimit,
+    offset: safeOffset,
+  };
 }
 
 async function handleAdminCommand(db, client, user, text) {
@@ -3562,6 +4415,230 @@ async function recordPostpartumVisitResponse(db, visitLog, response) {
     ],
   );
   return { allowed, limit, count: currentCount };
+}
+
+async function sendMotherClassReminderIfDue(db, client, user, now) {
+  if (!user || isMotherClassCompleted(user)) {
+    return false;
+  }
+  if (!isMotherClassSundayWindow(now)) {
+    return false;
+  }
+
+  const today = toDateKey(now);
+  if (user.mother_class_last_sent_date === today) {
+    return false;
+  }
+
+  let workingUser = user;
+  if (!workingUser.mother_class_status) {
+    const activationUpdates = getMotherClassActivationUpdates(workingUser, now);
+    await updateUser(db, workingUser.wa_id, activationUpdates);
+    workingUser = { ...workingUser, ...activationUpdates };
+  }
+
+  const pendingStep = String(workingUser.mother_class_step || "").trim();
+  if (pendingStep) {
+    const sentPending = await sendText(
+      client,
+      workingUser.wa_id,
+      buildMotherClassPendingQuestion(pendingStep),
+    );
+    if (sentPending) {
+      await updateUser(db, workingUser.wa_id, {
+        mother_class_last_sent_week: 1,
+        mother_class_last_sent_date: today,
+      });
+    }
+    return Boolean(sentPending);
+  }
+
+  const week = getMotherClassNextWeek(workingUser);
+  if (week > 4) {
+    await updateUser(db, workingUser.wa_id, {
+      mother_class_status: "completed",
+      mother_class_completed_at:
+        workingUser.mother_class_completed_at || now.toISO(),
+    });
+    return false;
+  }
+
+  const sent = await sendText(
+    client,
+    workingUser.wa_id,
+    buildMotherClassWeekMessage(workingUser, week),
+  );
+  if (!sent) {
+    return false;
+  }
+
+  const updates = {
+    mother_class_status: "active",
+    mother_class_last_sent_week: week,
+    mother_class_last_sent_date: today,
+  };
+
+  if (week === 1) {
+    updates.mother_class_step = "week1_attended";
+  } else if (week === 4) {
+    updates.mother_class_next_week = 5;
+    updates.mother_class_status = "completed";
+    updates.mother_class_step = null;
+    updates.mother_class_completed_at = now.toISO();
+  } else {
+    updates.mother_class_next_week = week + 1;
+    updates.mother_class_step = null;
+  }
+
+  await updateUser(db, workingUser.wa_id, updates);
+  return true;
+}
+
+async function handleMotherClassAnswer(db, client, user, text) {
+  if (!user || !user.mother_class_step) {
+    return false;
+  }
+
+  const step = String(user.mother_class_step || "").trim();
+  const raw = text ? text.trim() : "";
+  if (!raw) {
+    await sendText(client, user.wa_id, buildMotherClassPendingQuestion(step));
+    return true;
+  }
+
+  if (step === "week1_attended") {
+    const answer = parsePollAnswer(raw);
+    if (!answer) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Jawab dengan *Sudah* atau *Belum* ya, Ibu.",
+      );
+      return true;
+    }
+    if (answer === "Sudah") {
+      await updateUser(db, user.wa_id, {
+        mother_class_attended: 1,
+        mother_class_step: "week1_location",
+      });
+      await sendText(
+        client,
+        user.wa_id,
+        buildMotherClassPendingQuestion("week1_location"),
+      );
+      return true;
+    }
+    await updateUser(db, user.wa_id, {
+      mother_class_attended: 0,
+      mother_class_step: "week1_area",
+    });
+    await sendText(
+      client,
+      user.wa_id,
+      buildMotherClassPendingQuestion("week1_area"),
+    );
+    return true;
+  }
+
+  if (step === "week1_location") {
+    await updateUser(db, user.wa_id, {
+      mother_class_location: raw,
+      mother_class_step: "week1_count",
+    });
+    await sendText(
+      client,
+      user.wa_id,
+      buildMotherClassPendingQuestion("week1_count"),
+    );
+    return true;
+  }
+
+  if (step === "week1_count") {
+    const count = parseMotherClassAttendanceCount(raw);
+    if (!count) {
+      await sendText(
+        client,
+        user.wa_id,
+        "Jumlah pertemuan belum terbaca. Balas angka *1*, *2*, *3*, atau *4* ya.",
+      );
+      return true;
+    }
+
+    if (count >= 4) {
+      await updateUser(db, user.wa_id, {
+        mother_class_attendance_count: count,
+        mother_class_step: null,
+        mother_class_next_week: 5,
+        mother_class_status: "completed",
+        mother_class_completed_at: nowWib().toISO(),
+      });
+      await sendText(
+        client,
+        user.wa_id,
+        "Selamat, Ibu sudah menyelesaikan 4 kali kelas ibu. Program pengingat kelas ibu dinyatakan selesai. 🎉",
+      );
+      return true;
+    }
+
+    await updateUser(db, user.wa_id, {
+      mother_class_attendance_count: count,
+      mother_class_step: null,
+      mother_class_next_week: 2,
+    });
+    await sendText(
+      client,
+      user.wa_id,
+      `Baik, Ibu sudah mengikuti kelas ibu ${count} kali. RemindCare akan lanjut mengingatkan setiap hari Minggu pagi sampai program 4 minggu selesai.\n\n${buildMotherClassWeek1MaterialMessage()}`,
+    );
+    return true;
+  }
+
+  if (step === "week1_area") {
+    await updateUser(db, user.wa_id, {
+      mother_class_area: raw,
+      mother_class_step: null,
+      mother_class_next_week: 2,
+    });
+    await sendText(
+      client,
+      user.wa_id,
+      `Baik, wilayah cakupan Ibu sudah dicatat.\n\n${buildMotherClassWeek1MaterialMessage()}`,
+    );
+    return true;
+  }
+
+  await updateUser(db, user.wa_id, { mother_class_step: null });
+  return false;
+}
+
+async function hasCompletedFinalPostpartumVisit(db, waId) {
+  const row = await dbGet(
+    db,
+    `SELECT id
+     FROM postpartum_visit_logs
+     WHERE wa_id = ?
+       AND visit_code = 'KF4'
+       AND response = 'Sudah'
+     LIMIT 1`,
+    [waId],
+  );
+  return Boolean(row);
+}
+
+async function completeUserAfterFinalPostpartumVisit(db, client, user) {
+  if (!user || user.status === "completed") {
+    return false;
+  }
+  await updateUser(db, user.wa_id, {
+    status: "completed",
+    allow_remindcare: 0,
+  });
+  await sendText(
+    client,
+    user.wa_id,
+    "Selamat, kunjungan KF 4 sudah tercatat. Program RemindCare selesai, jadi pengingat tablet FE tidak akan dikirim lagi. Jika ada program atau kehamilan baru, ketik *edit data* untuk isi ulang dari awal.",
+  );
+  return true;
 }
 
 async function sendPostpartumEducationIfNeeded(db, client, user, now) {
@@ -4071,8 +5148,13 @@ async function handlePostpartumVisitResponse(
     await sendText(
       client,
       user.wa_id,
-      `Terima kasih, jawaban ${visit.label} sudah dicatat. Tetap lanjutkan kunjungan berikutnya sesuai jadwal ya.`,
+      visitLog.visit_code === "KF4"
+        ? `Terima kasih, jawaban ${visit.label} sudah dicatat.`
+        : `Terima kasih, jawaban ${visit.label} sudah dicatat. Tetap lanjutkan kunjungan berikutnya sesuai jadwal ya.`,
     );
+    if (visitLog.visit_code === "KF4") {
+      await completeUserAfterFinalPostpartumVisit(db, client, user);
+    }
   } else {
     await sendText(
       client,
@@ -4088,7 +5170,11 @@ async function handleOnboardingAnswer(db, client, user, text) {
   const question = QUESTIONS[step - 1];
 
   if (!question) {
-    await updateUser(db, user.wa_id, { status: "active", onboarding_step: 0 });
+    await updateUser(db, user.wa_id, {
+      ...getMotherClassActivationUpdates(user),
+      status: "active",
+      onboarding_step: 0,
+    });
     return;
   }
 
@@ -4164,6 +5250,7 @@ async function handleOnboardingAnswer(db, client, user, text) {
 
     await updateUser(db, user.wa_id, {
       ...updates,
+      ...getMotherClassActivationUpdates(user, now),
       status: "active",
       onboarding_step: 0,
       last_reminder_date: lastReminderDate,
@@ -4398,7 +5485,11 @@ async function handleCommand(db, client, user, text) {
       return true;
     }
 
-    await updateUser(db, user.wa_id, { allow_remindcare: 1, status: "active" });
+    await updateUser(db, user.wa_id, {
+      ...getMotherClassActivationUpdates(user),
+      allow_remindcare: 1,
+      status: "active",
+    });
     await sendText(
       client,
       user.wa_id,
@@ -4420,6 +5511,7 @@ async function handleCommand(db, client, user, text) {
       return true;
     }
     await updateUser(db, user.wa_id, {
+      ...getMotherClassActivationUpdates(user),
       reminder_time: time,
       allow_remindcare: 1,
       status: "active",
@@ -4574,6 +5666,10 @@ async function handleMessage(db, client, msg) {
     return;
   }
 
+  if (await handleMotherClassAnswer(db, client, user, text)) {
+    return;
+  }
+
   const pollAnswer = parsePollAnswer(text);
   if (pollAnswer) {
     const today = toDateKey(nowWib());
@@ -4725,6 +5821,14 @@ async function processUserReminderTick(db, client, user, now, today) {
   const collectingDeliveryData =
     Number.isFinite(Number(user.delivery_data_step)) &&
     Number(user.delivery_data_step) > 0;
+  if (
+    postpartumActive &&
+    (await hasCompletedFinalPostpartumVisit(db, user.wa_id))
+  ) {
+    await completeUserAfterFinalPostpartumVisit(db, client, user);
+    return;
+  }
+
   if (postpartumActive && inPreReminderWindow) {
     await processPostpartumVisitReminders(db, client, user, now);
   }
@@ -4733,6 +5837,8 @@ async function processUserReminderTick(db, client, user, now, today) {
   if (inPreReminderWindow && deliveryStage) {
     await sendDeliveryValidationPoll(db, client, user, now, deliveryStage);
   }
+
+  await sendMotherClassReminderIfDue(db, client, user, now);
 
   if (!canSendMainReminder) {
     return;
@@ -4839,6 +5945,12 @@ function startAdminServer(db) {
     next();
   });
 
+  for (const [slug, targetUrl] of Object.entries(MOTHER_CLASS_REDIRECTS)) {
+    app.get(`/${slug}`, (req, res) => {
+      res.redirect(302, targetUrl);
+    });
+  }
+
   const requireAdmin = (req, res, next) => {
     const token = getAdminSession(req);
     if (token) {
@@ -4887,6 +5999,15 @@ function startAdminServer(db) {
     res.send(renderAdminDashboardPage());
   });
 
+  app.get("/admin/users/:waId", requireAdmin, (req, res) => {
+    const waId = String(req.params.waId || "").trim();
+    if (!waId) {
+      res.status(400).send("Invalid user");
+      return;
+    }
+    res.send(renderAdminUserDetailPage(waId));
+  });
+
   app.get("/admin/api/summary", requireAdmin, async (req, res) => {
     try {
       const summary = await getAdminSummary(db);
@@ -4922,6 +6043,23 @@ function startAdminServer(db) {
       res.json(detail);
     } catch (err) {
       console.error("Gagal mengambil detail user:", err);
+      res.status(500).json({ error: "failed" });
+    }
+  });
+
+  app.get("/admin/api/users/:waId/logs", requireAdmin, async (req, res) => {
+    const waId = String(req.params.waId || "").trim();
+    if (!waId) {
+      res.status(400).json({ error: "invalid" });
+      return;
+    }
+    const limit = Number(req.query.limit || 20);
+    const offset = Number(req.query.offset || 0);
+    try {
+      const paged = await getUserLogsPaged(db, waId, limit, offset);
+      res.json(paged);
+    } catch (err) {
+      console.error("Gagal mengambil logs user paged:", err);
       res.status(500).json({ error: "failed" });
     }
   });
@@ -5281,4 +6419,6 @@ module.exports = {
   validateDeliveryDateIso,
   validateDeliveryDateTime,
   isDeliveryCheckCommand,
+  isMotherClassSundayWindow,
+  parseMotherClassAttendanceCount,
 };
