@@ -1,4 +1,7 @@
 node_modules/
 data/
+data backup/
+*.db
 .wwebjs_auth/
 .wwebjs_cache/
+.env

@@ -1,5 +1,5 @@
 {
-  "name": "rc-bot",
+  "name": "remindcare",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -7,9 +7,9 @@
     "test": "node tests/parse.test.js"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
+  "author": "Azra Hudaya",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "description": "WhatsApp reminder bot for daily iron tablet adherence during pregnancy",
   "dependencies": {
     "express": "^4.19.2",
     "luxon": "^3.7.2",
